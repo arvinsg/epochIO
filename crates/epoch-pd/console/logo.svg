@@ -1,0 +1,17 @@
+<!-- epochIO mark — full detail, ≥32px. Use logo-compact.svg at ≤24px.
+     Reading: ring = O, centre pill ≈ I → "IO"; also a Chunk's shard ring with one
+     accent segment = the parity / repairing Shard. 12 segments (段数是密度参数而非
+     信息参数). v0.5: accent 段移到 5:00（离开电源键缺口区；起笔对齐段界 -90°+k×30°，
+     落在段间缝隙会导致 accent 跨缝与邻段连成一片）；中心统一为短胖 pill
+     ——两档同一语言：一粒成型、仅有 I 的暗示（工字 I 因中心碎成三块被淘汰）.
+     Deliberately NOT ⓘ: segmented ring + one accent segment + short thick pill.
+     r=23, w=7 → C=144.513; 12 段 period 12.043 = 8.43 on + 3.61 off. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="epochIO">
+  <g fill="none">
+    <circle cx="32" cy="32" r="23" stroke="#2a78d6" stroke-width="7"
+            stroke-dasharray="8.43 3.61" transform="rotate(-90 32 32)"/>
+    <circle cx="32" cy="32" r="23" stroke="#eb6834" stroke-width="7"
+            stroke-dasharray="8.43 136.08" transform="rotate(60 32 32)"/>
+  </g>
+  <rect x="28.2" y="25.5" width="7.6" height="13" rx="3.8" fill="#2a78d6"/>
+</svg>

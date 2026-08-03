@@ -1,0 +1,13 @@
+<!-- epochIO mark — compact detail (8 segments, thicker ring) for ≤24px: favicon,
+     nav, tab. v0.5: accent 段移到 4:30（8 段环此处恰为段界，对齐无误）；中心短胖 pill —— 与 logo.svg 同一语言
+     （两档只在段数/环粗上降细节，中心形不再分档）. r=22, w=9 → C=138.23;
+     8 段 period 17.28 = 12.44 on + 4.84 off. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="16" height="16" role="img" aria-label="epochIO">
+  <g fill="none">
+    <circle cx="32" cy="32" r="22" stroke="#2a78d6" stroke-width="9"
+            stroke-dasharray="12.44 4.84" transform="rotate(-90 32 32)"/>
+    <circle cx="32" cy="32" r="22" stroke="#eb6834" stroke-width="9"
+            stroke-dasharray="12.44 125.79" transform="rotate(45 32 32)"/>
+  </g>
+  <rect x="28.2" y="25.5" width="7.6" height="13" rx="3.8" fill="#2a78d6"/>
+</svg>

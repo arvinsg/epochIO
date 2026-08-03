@@ -1,0 +1,20 @@
+[package]
+name = "epoch-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+epoch-ec = { workspace = true }
+epoch-proto = { workspace = true, features = ["grpc"] }
+epoch-rpc = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

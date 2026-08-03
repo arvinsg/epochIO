@@ -1,0 +1,502 @@
+// epochIO MetaNode gRPC contract (docs/design/03-metanode.md).
+//
+// Two surfaces on one service:
+//   1. PD-facing admin: CreateRaftGroup (01 §5 — PD pushes partition raft
+//      groups onto the three chosen MetaNodes).
+//   2. Gateway-facing metadata ops (03 §5 flat namespace): Put / Head /
+//      Delete / List, routed by (bucket_id, key) to the partition leader.
+//
+// Routing errors are carried in-band (`RouteError`) rather than as gRPC
+// statuses: NOT_LEADER / PARTITION_MOVED / NO_PARTITION are normal control
+// flow for a partitioned service, and the client reacts by redirecting or
+// refreshing its route cache (01 §5 路由服务).
+//
+// Terminology follows docs/design/00-overview.md §2 only.
+
+syntax = "proto3";
+
+package epoch.meta;
+
+import "pd.proto";
+
+// One raft peer of a partition group.
+message RaftPeer {
+  uint32 node_id = 1;
+  string addr = 2;
+}
+
+// CreateRaftGroup — PD → MetaNode (01 §5). Creates the partition group on
+// this node; the peer whose node_id equals `bootstrap_node_id` additionally
+// initializes cluster membership (all peers receive the same request, so
+// group creation is idempotent per node).
+message CreateRaftGroupRequest {
+  uint64 partition_id = 1;
+  epoch.pd.NsMode ns = 2;
+  // Start/end bounds in (bucket_id, routing_key) coordinates; *_unbounded = ±∞.
+  uint64 start_bucket = 3;
+  bytes start_key = 4;
+  bool start_unbounded = 5;
+  uint64 end_bucket = 6;
+  bytes end_key = 7;
+  bool end_unbounded = 8;
+  repeated RaftPeer peers = 9;
+  uint32 bootstrap_node_id = 10;
+}
+
+message CreateRaftGroupResponse {}
+
+// SuggestSplitPoint — PD → MetaNode (01 §5 分裂). The partition scheduler picks
+// *which* partition to split (size signal), but only the MetaNode holding the
+// data knows a good boundary. This asks the group's leader to choose a median
+// routing key strictly inside its range (03 §2 分裂点在对象/目录项粒度). PD then
+// allocates the child id + ino tag and drives ApplySplit.
+message SuggestSplitPointRequest {
+  uint64 partition_id = 1;
+}
+
+message SuggestSplitPointResponse {
+  RouteError error = 1;
+  // False when the group cannot be split now (empty / single-key range); PD
+  // skips it this sweep.
+  bool splittable = 2;
+  // The chosen boundary in (bucket, routing_key) coordinates (only meaningful
+  // when splittable): parent keeps [start, at), child takes [at, end).
+  uint64 at_bucket = 3;
+  bytes at_routing_key = 4;
+}
+
+// ApplySplit — PD → MetaNode (01 §5 分裂). After PD has narrowed its route
+// record and allocated the child's id + ino tag, it tells the parent group's
+// leader to perform the matching deterministic in-log split (03 §2/§8): the
+// SplitOp is proposed into the parent group's raft log so all three replicas
+// split at the same log position. Idempotent — a replayed split whose boundary
+// is already outside the (narrowed) live range is a no-op.
+message ApplySplitRequest {
+  uint64 partition_id = 1;
+  uint64 child_group = 2;
+  uint64 at_bucket = 3;
+  bytes at_routing_key = 4;
+  repeated RaftPeer child_peers = 5;
+  uint32 bootstrap_node_id = 6;
+  // The child's ino partition tag (03 §6.5; hier only, PD-allocated unique).
+  uint32 child_ino_tag = 7;
+}
+
+message ApplySplitResponse {
+  RouteError error = 1;
+}
+
+// PrepareMigrateTarget — PD → MetaNode (01 §5 迁移). Ensures the *target* node
+// hosts the (un-initialized) partition group locally so its transport can
+// accept replication before the source leader adds it as a learner (03 §2).
+// Idempotent per node.
+message PrepareMigrateTargetRequest {
+  uint64 partition_id = 1;
+  epoch.pd.NsMode ns = 2;
+  uint64 start_bucket = 3;
+  bytes start_key = 4;
+  bool start_unbounded = 5;
+  uint64 end_bucket = 6;
+  bytes end_key = 7;
+  bool end_unbounded = 8;
+  repeated RaftPeer peers = 9;
+}
+
+message PrepareMigrateTargetResponse {}
+
+// MigrateGroupMember — PD → MetaNode (01 §5 迁移). Drives the source group
+// leader's single-voter swap (AddLearner → catch up → Promote → RemovePeer,
+// 03 §2). Idempotent — re-running after a mid-flight failure re-adds the
+// learner (no-op if present) and re-issues the joint change (no-op if applied).
+message MigrateGroupMemberRequest {
+  uint64 partition_id = 1;
+  uint32 from_node_id = 2;
+  uint32 to_node_id = 3;
+  string to_addr = 4;
+  // The post-swap voter set (from PD's route record), so the leader computes
+  // the same joint membership every replica will.
+  repeated RaftPeer voters = 5;
+}
+
+message MigrateGroupMemberResponse {
+  RouteError error = 1;
+}
+
+// Routing outcome of a metadata op (06 §9: NotLeader / PartitionMoved 回错).
+message RouteError {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    // This node holds the partition but is not (or no longer) its leader;
+    // retry at `leader_addr` when set.
+    KIND_NOT_LEADER = 1;
+    // The key's partition is not hosted here; refresh the route via PD
+    // GetRoute (covers both "moved away" and "never heard of it").
+    KIND_PARTITION_MOVED = 2;
+    // No partition covers the coordinate at all (client should CreatePartition
+    // or wait for bootstrap).
+    KIND_NO_PARTITION = 3;
+  }
+  Kind kind = 1;
+  string leader_addr = 2;
+  uint64 partition_id = 3;
+}
+
+// One EC stripe reference of an object (03 §4.2 Slice).
+message SliceRef {
+  uint32 chunk_id = 1;
+  repeated uint64 blob_ids = 2;
+  uint32 blob_size = 3;
+}
+
+// The wire view of an object head (03 §4.2). Slices are not inlined here:
+// Head/List return the lightweight view (`embedded_slices` in the head plus
+// `seg_count` overflow segments, fetched by seg_no for GETs — M6 gateway
+// concern).
+message ObjectHeadView {
+  uint64 size = 1;
+  bytes etag = 2;  // 16 bytes
+  int64 mtime = 3;
+  bool inline = 4;
+  uint32 embedded_slices = 5;
+  uint32 seg_count = 6;
+  // HTTP metadata replayed on GET/HEAD (S3 semantics). Empty = unset, which the
+  // gateway renders as an absent header rather than an empty one — an object
+  // stored without a Content-Type must not read back as `Content-Type: `.
+  string content_type = 7;
+  string content_encoding = 8;
+  string cache_control = 9;
+  // User metadata (`x-amz-meta-*`), header name (lowercased, without the
+  // prefix) → value.
+  map<string, string> user_metadata = 10;
+}
+
+// PutObject (03 §5): the gateway has already written the data and now commits
+// the metadata — either inline bytes (small objects, 03 §4.3) or the full
+// slice list (unpacked; the MetaNode packs head/segments at apply).
+message PutObjectRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  uint64 size = 3;
+  bytes etag = 4;  // 16 bytes
+  // Proposer wall-clock millis; replicated with the entry so apply never
+  // reads a clock (03 §8 delq enqueue_ts).
+  int64 ts_millis = 5;
+  // Exactly one content form: inline bytes, or the slice list.
+  bytes inline_data = 6;
+  repeated SliceRef slices = 7;
+  // HTTP metadata to persist with the head (see ObjectHeadView).
+  string content_type = 8;
+  string content_encoding = 9;
+  string cache_control = 10;
+  map<string, string> user_metadata = 11;
+}
+
+message PutObjectResponse {
+  RouteError error = 1;
+}
+
+message HeadObjectRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+}
+
+message HeadObjectResponse {
+  RouteError error = 1;
+  bool found = 2;
+  ObjectHeadView head = 3;
+}
+
+// GetObjectMeta (M6 gateway read path): the full assembled slice list of an
+// object — head-embedded slices plus every overflow segment, concatenated in
+// object order — so the gateway can reconstruct the EC layout in one RPC.
+// `HeadObject` returns only the lightweight view (no slices); this returns the
+// data references a GET needs. Bounded: 99%+ objects are ≤64 embedded slices;
+// large objects carry their segments here too (a 1TB object ≈ 32 segments).
+message GetObjectMetaRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+}
+
+message GetObjectMetaResponse {
+  RouteError error = 1;
+  bool found = 2;
+  // Present only for a found object; carries size/etag/inline flag.
+  ObjectHeadView head = 3;
+  // Inline content, when `head.inline` is true (small objects, 03 §4.3).
+  bytes inline_data = 4;
+  // The full slice list (empty for inline or missing objects), head-embedded
+  // slices followed by every overflow segment's slices, in object order.
+  repeated SliceRef slices = 5;
+}
+
+message DeleteObjectRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  int64 ts_millis = 3;
+}
+
+message DeleteObjectResponse {
+  RouteError error = 1;
+}
+
+// ListObjectsV2 (03 §5): ordered page under `prefix`, strictly after
+// `start_after` (empty = from the prefix start).
+message ListObjectsRequest {
+  uint64 bucket_id = 1;
+  bytes prefix = 2;
+  bytes start_after = 3;
+  uint32 limit = 4;
+}
+
+message ObjectEntry {
+  bytes key = 1;
+  ObjectHeadView head = 2;
+}
+
+message ListObjectsResponse {
+  RouteError error = 1;
+  repeated ObjectEntry entries = 2;
+}
+
+// === Multipart uploads (03 §5 Multipart 全家) ===
+//
+// Sessions and parts cluster under the object's own key, so every op routes
+// exactly like PutObject; Complete is one atomic batch on the partition.
+
+// CreateMultipartUpload — opens a session (idempotent per `upload_id`).
+message CreateMultipartUploadRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  bytes upload_id = 3;  // 16 bytes, client-generated, never reused
+  int64 ts_millis = 4;
+}
+
+message CreateMultipartUploadResponse {
+  RouteError error = 1;
+}
+
+// UploadPart — writes one part's metadata (the gateway has already written
+// the part's data and passes its slice list). `rejected` is set for
+// deterministic validation failures (unknown upload id).
+message PutPartRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  bytes upload_id = 3;
+  uint32 part_no = 4;
+  uint64 size = 5;
+  bytes etag = 6;  // 16 bytes
+  repeated SliceRef slices = 7;
+  int64 ts_millis = 8;
+}
+
+message PutPartResponse {
+  RouteError error = 1;
+  string rejected = 2;
+}
+
+// One entry of the ordered part list a Complete assembles.
+message PartRef {
+  uint32 part_no = 1;
+  bytes etag = 2;  // 16 bytes
+}
+
+// CompleteMultipartUpload — repacks the listed parts into the object head in
+// one atomic batch. `rejected` carries the validation failure (unknown
+// upload, missing part, etag mismatch, empty list).
+message CompleteMultipartRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  bytes upload_id = 3;
+  repeated PartRef parts = 4;
+  int64 ts_millis = 5;
+}
+
+message CompleteMultipartResponse {
+  RouteError error = 1;
+  string rejected = 2;
+}
+
+// AbortMultipartUpload — discards the session and tombstones its parts'
+// data (idempotent).
+message AbortMultipartUploadRequest {
+  uint64 bucket_id = 1;
+  bytes key = 2;
+  bytes upload_id = 3;
+  int64 ts_millis = 4;
+}
+
+message AbortMultipartUploadResponse {
+  RouteError error = 1;
+}
+
+// DelqBacklog — delete-queue observability (03 §8: the queue's drain health
+// is a first-class ops metric). Reads the local replica's queue (raft-
+// consistent everywhere), so any replica hosting the partition answers.
+message DelqBacklogRequest {
+  uint64 partition_id = 1;
+}
+
+message DelqBacklogResponse {
+  bool hosted = 1;  // false = the partition is not hosted here
+  uint64 entries = 2;
+}
+
+// === Hierarchical namespace (03 §6) ===
+//
+// Ops route by the (parent_ino, name) coordinate (hier routing key). The
+// gateway's s3compat layer (03 §6.4) orchestrates path walk + the idempotent
+// two-step mkdir over these primitives; they mirror the `HierOp` apply vocab.
+
+// The kind of a resolved hier entry (a name is a file, a directory, or absent).
+enum HierEntryKind {
+  HIER_ENTRY_UNSPECIFIED = 0;
+  HIER_ENTRY_FILE = 1;
+  HIER_ENTRY_DIR = 2;
+}
+
+// HierLookup — resolve one path component `(parent_ino, name)` (path walk /
+// getattr). `name` empty resolves the directory sentinel of `parent_ino`.
+message HierLookupRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+}
+
+message HierLookupResponse {
+  RouteError error = 1;
+  HierEntryKind kind = 2;  // UNSPECIFIED = not found
+  // For a file: its head view. For a dir: the child directory inode.
+  ObjectHeadView file = 3;
+  uint64 dir_ino = 4;
+  // For a file: its content — inline bytes (when the head is inline) or the
+  // full slice list. Lets the gateway serve a hier GET from one lookup.
+  bytes inline_data = 5;
+  repeated SliceRef slices = 6;
+}
+
+// HierWrite — create or overwrite a file at `(parent_ino, name)` (inline or
+// EC slices, like PutObject). An overwrite captures old slices (03 §5).
+message HierWriteRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+  uint64 size = 4;
+  bytes etag = 5;  // 16 bytes
+  int64 ts_millis = 6;
+  bytes inline_data = 7;
+  repeated SliceRef slices = 8;
+  // HTTP metadata to persist with the record (see ObjectHeadView).
+  string content_type = 9;
+  string content_encoding = 10;
+  string cache_control = 11;
+  map<string, string> user_metadata = 12;
+}
+
+message HierWriteResponse {
+  RouteError error = 1;
+  string rejected = 2;  // e.g. dir/file conflict (03 §6.4)
+}
+
+// HierUnlink — remove a file at `(parent_ino, name)` (idempotent).
+message HierUnlinkRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+  int64 ts_millis = 4;
+}
+
+message HierUnlinkResponse {
+  RouteError error = 1;
+  string rejected = 2;
+}
+
+// HierMkdirSentinel — mkdir step 1 (03 §6.2): mint the child directory
+// sentinel; the response carries the minted child inode for step 2.
+message HierMkdirSentinelRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+  int64 ts_millis = 4;
+}
+
+message HierMkdirSentinelResponse {
+  RouteError error = 1;
+  uint64 child_ino = 2;
+}
+
+// HierMkdirLink — mkdir step 2 / commit point (03 §6.2): link the child dir
+// into its parent. Idempotent; `rejected` on a dir/file conflict.
+message HierMkdirLinkRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+  uint64 child_ino = 4;
+  int64 ts_millis = 5;
+}
+
+message HierMkdirLinkResponse {
+  RouteError error = 1;
+  string rejected = 2;
+}
+
+// HierReaddir — a page of a directory's entries (03 §6.1 prefix scan), ordered
+// by name, strictly after `start_after` (empty = from the first child).
+message HierReaddirRequest {
+  uint64 bucket_id = 1;
+  uint64 dir_ino = 2;
+  bytes start_after = 3;
+  uint32 limit = 4;
+}
+
+message HierDirEntry {
+  bytes name = 1;
+  HierEntryKind kind = 2;
+  ObjectHeadView file = 3;  // set for files
+  uint64 dir_ino = 4;       // set for directories
+}
+
+message HierReaddirResponse {
+  RouteError error = 1;
+  repeated HierDirEntry entries = 2;
+}
+
+// ExportReferences — GcRound coordinator → MetaNode leader (01 §6.3 / Q27): scan
+// a hosted partition's primary index and return every referenced blob id (the
+// GC keep-set). `hosted=false` if this node does not host/lead the partition.
+message ExportReferencesRequest {
+  uint64 partition_id = 1;
+}
+
+message ExportReferencesResponse {
+  bool hosted = 1;
+  // Referenced blob ids (raw u64), ascending. A DataNode diffs its on-disk
+  // blobs against the union of these across partitions.
+  repeated uint64 blob_ids = 2;
+}
+
+// The MetaNode service. One gRPC server also mounts the raft transport
+// (raft.proto MetaRaftTransport) on the same listener.
+service MetaNode {
+  rpc CreateRaftGroup(CreateRaftGroupRequest) returns (CreateRaftGroupResponse);
+  rpc SuggestSplitPoint(SuggestSplitPointRequest) returns (SuggestSplitPointResponse);
+  rpc ApplySplit(ApplySplitRequest) returns (ApplySplitResponse);
+  rpc PrepareMigrateTarget(PrepareMigrateTargetRequest) returns (PrepareMigrateTargetResponse);
+  rpc MigrateGroupMember(MigrateGroupMemberRequest) returns (MigrateGroupMemberResponse);
+  rpc PutObject(PutObjectRequest) returns (PutObjectResponse);
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse);
+  rpc GetObjectMeta(GetObjectMetaRequest) returns (GetObjectMetaResponse);
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  rpc CreateMultipartUpload(CreateMultipartUploadRequest) returns (CreateMultipartUploadResponse);
+  rpc PutPart(PutPartRequest) returns (PutPartResponse);
+  rpc CompleteMultipart(CompleteMultipartRequest) returns (CompleteMultipartResponse);
+  rpc AbortMultipartUpload(AbortMultipartUploadRequest) returns (AbortMultipartUploadResponse);
+  rpc DelqBacklog(DelqBacklogRequest) returns (DelqBacklogResponse);
+  rpc HierLookup(HierLookupRequest) returns (HierLookupResponse);
+  rpc HierWrite(HierWriteRequest) returns (HierWriteResponse);
+  rpc HierUnlink(HierUnlinkRequest) returns (HierUnlinkResponse);
+  rpc HierMkdirSentinel(HierMkdirSentinelRequest) returns (HierMkdirSentinelResponse);
+  rpc HierMkdirLink(HierMkdirLinkRequest) returns (HierMkdirLinkResponse);
+  rpc HierReaddir(HierReaddirRequest) returns (HierReaddirResponse);
+  rpc ExportReferences(ExportReferencesRequest) returns (ExportReferencesResponse);
+}

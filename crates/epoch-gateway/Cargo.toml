@@ -1,0 +1,32 @@
+[package]
+name = "epoch-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+epoch-client = { workspace = true }
+# `grpc` gives the MetaNode wire types (SliceRef, ObjectHeadView) the M6 bridge
+# maps to/from; the gateway drives MetaNode over the generated client.
+epoch-proto = { workspace = true, features = ["grpc"] }
+epoch-ec = { workspace = true }
+epoch-rpc = { workspace = true }
+bytes = { workspace = true }
+crc32c = { workspace = true }
+md5 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+s3s = { workspace = true }
+# Status codes for the ranged-GET 206 reply (shares s3s's `http` tree).
+http = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+epoch-store = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

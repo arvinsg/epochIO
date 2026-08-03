@@ -1,0 +1,106 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[workspace.dependencies]
+# --- workspace-internal crates (path deps; layering enforced by `cargo xtask layers`) ---
+epoch-proto = { path = "crates/epoch-proto" }
+epoch-telemetry = { path = "crates/epoch-telemetry" }
+epoch-ec = { path = "crates/epoch-ec" }
+epoch-rpc = { path = "crates/epoch-rpc" }
+epoch-rocks = { path = "crates/epoch-rocks" }
+epoch-store = { path = "crates/epoch-store" }
+epoch-client = { path = "crates/epoch-client" }
+epoch-pd = { path = "crates/epoch-pd" }
+epoch-meta = { path = "crates/epoch-meta" }
+epoch-gateway = { path = "crates/epoch-gateway" }
+epoch-worker = { path = "crates/epoch-worker" }
+epoch-node = { path = "crates/epoch-node" }
+
+# --- external dependencies (single source of version truth) ---
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+prometheus = "0.13"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+reed-solomon-simd = "3.1"
+blake3 = "1"
+crc32c = "0.6"
+# S3 ETag is MD5 (protocol-mandated); used only at the gateway to compute the
+# object/multipart ETag. Internal integrity stays on blake3/crc32c. `md-5` is
+# the RustCrypto impl (MIT/Apache-2.0), no_std-friendly, no transitive weight.
+md5 = { package = "md-5", version = "0.10" }
+# RocksDB: bundled build (vendored C++, version-pinned & CI-reproducible). lz4 only
+# (per-disk index needs one fast codec); bindgen-runtime keeps libclang loaded via
+# dlopen (respects LIBCLANG_PATH) rather than as a link-time dep. Add zstd /
+# StateMachine profiles when M4/M5 need them.
+rocksdb = { version = "0.24", default-features = false, features = ["lz4", "bindgen-runtime"] }
+# data-plane async runtime + zero-copy buffers + dyn-compatible async traits (M3)
+tokio = { version = "1", default-features = false }
+# Wraps a tokio TcpListener as a tonic incoming stream (PD multi-replica test
+# harness serves the raft gRPC on an OS-assigned port).
+tokio-stream = "0.1"
+bytes = "1"
+async-trait = "0.1"
+# S3 protocol head (M6): s3s owns HTTP/XML parsing, SigV4 verification, and
+# streaming; the gateway implements its `S3`/`S3Auth` traits. Apache-2.0.
+s3s = "0.14"
+# HTTP server for the S3 head (hyper 1 matches s3s's dep; hyper-util's auto
+# connection builder serves the s3s hyper::Service).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "tokio"] }
+http-body-util = "0.1"
+# HTTP types (status codes for the S3 head's 206/416 replies). Pinned to 1 to
+# share s3s's `http` tree — a second major version would make its StatusCode a
+# different type than the one `S3Response::status` takes.
+http = "1"
+# M6 end-to-end acceptance (dev-only): a real S3 client that signs SigV4 and
+# speaks HTTP to the served gateway, proving the head is genuinely
+# S3-compatible (not just the in-process backend). `aws-sigv4` (Apache-2.0) is
+# the canonical SigV4 signer; `reqwest` (MIT/Apache-2.0) is the HTTP client.
+# The e2e talks plain HTTP to a loopback gateway, so no TLS backend is pulled
+# (keeps `ring`/`rustls` out of the dep tree and the deny.toml license set
+# unchanged). Test scope only — no production crate depends on these.
+aws-sigv4 = "1"
+aws-credential-types = "1"
+reqwest = { version = "0.12", default-features = false, features = ["http2"] }
+# PD/Meta consensus: one raft group per service (openraft 0.9; Q25/Q22). The
+# serde feature persists log entries / vote / snapshot through epoch-rocks;
+# storage-v2 is required to implement the split RaftLogStorage / RaftStateMachine
+# traits from a downstream crate (its `Sealed` blanket impl is gated on it).
+openraft = { version = "0.9", features = ["serde", "storage-v2"] }
+# Control-plane + metadata gRPC (Q2): tonic 0.14 (MIT). Generated stubs live in
+# epoch-proto behind the `grpc` feature, so only PD / client compile them; the
+# pure data-plane crates never pull the codec. Since tonic 0.13 the prost
+# integration is split out: `tonic-prost` is the runtime codec and
+# `tonic-prost-build` the build-time codegen (both track tonic's version).
+# Pinned to 0.14.x (0.14.6 current); default tonic features (router + transport +
+# codegen) cover both the PD server and the client channel.
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+tonic-prost-build = "0.14"
+# Linux syscalls (extent fallocate preallocation, 02 §1.7); Linux-only in crates.
+libc = "0.2"
+# Web Console (08, M9): embed the frontend product into the PD binary
+# (`include_dir!`, MIT/Apache-2.0) and mint session tokens from OS entropy
+# (`getrandom`, already in the tree via rand). Console lives in epoch-pd.
+include_dir = "0.7"
+getrandom = "0.2"
+# dev / test / bench tooling
+criterion = "0.5"
+proptest = "1"
+tempfile = "3"
+serde_json = "1"
+
+[workspace.lints.clippy]
+# Aligned with the project validation command (AGENTS.md §10.3):
+#   cargo clippy --all-targets -- -D warnings --allow clippy::uninlined-format-args
+uninlined_format_args = "allow"

@@ -1,0 +1,52 @@
+[package]
+name = "epoch-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "epochio"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+epoch-client = { workspace = true }
+epoch-gateway = { workspace = true }
+epoch-meta = { workspace = true }
+epoch-pd = { workspace = true }
+epoch-proto = { workspace = true }
+epoch-rpc = { workspace = true }
+epoch-store = { workspace = true }
+epoch-telemetry = { workspace = true }
+epoch-worker = { workspace = true }
+openraft = { workspace = true }
+s3s = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+prometheus = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+tonic = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+
+[dev-dependencies]
+aws-credential-types = { workspace = true }
+aws-sigv4 = { workspace = true }
+bytes = { workspace = true }
+crc32c = { workspace = true }
+epoch-client = { workspace = true }
+epoch-gateway = { workspace = true }
+epoch-proto = { workspace = true, features = ["grpc"] }
+epoch-rpc = { workspace = true }
+md5 = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

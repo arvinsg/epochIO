@@ -1,0 +1,76 @@
+// epochIO PD raft peer transport (docs/design/01-pd.md §2, Q2/Q22).
+//
+// Carries openraft's raft RPCs between PD replicas so a multi-replica PD group
+// can elect a leader, replicate the journal, and fail over. Each envelope wraps
+// the serde-encoded openraft request (client → server) or the serde-encoded
+// `Result<Response, RaftError>` (server → client); modelling the raft internals
+// as protobuf messages would duplicate openraft's own wire types, so the payload
+// stays opaque bytes and openraft owns the encoding.
+//
+// This is PD-internal (replica ↔ replica), distinct from the client-facing
+// control plane in `pd.proto`.
+
+syntax = "proto3";
+
+package epoch.raft;
+
+// Opaque serde-encoded raft payload (an openraft request, or a response
+// `Result`). The encoding is openraft's; this transport only frames it.
+message RaftEnvelope {
+  bytes payload = 1;
+}
+
+// PD replica-to-replica raft transport. One method per openraft peer RPC.
+service PdRaftPeer {
+  rpc AppendEntries(RaftEnvelope) returns (RaftEnvelope);
+  rpc Vote(RaftEnvelope) returns (RaftEnvelope);
+  rpc InstallSnapshot(RaftEnvelope) returns (RaftEnvelope);
+}
+
+// MetaNode multi-group raft transport (docs/design/03-metanode.md §8 心跳合并).
+//
+// A MetaNode runs O(百) raft groups (one per partition). Every openraft peer
+// RPC of every group between one node pair is multiplexed onto a single
+// batched RPC: the sender coalesces envelopes for a short window (few ms),
+// the receiver fans each envelope out to its local group by `group_id`. One
+// connection per node pair carries all groups — no per-group heartbeat
+// connection storm. Payloads stay opaque serde bytes, exactly like
+// RaftEnvelope above.
+message MetaRaftEnvelope {
+  // The partition raft group this message belongs to.
+  uint64 group_id = 1;
+  // Which openraft peer RPC the payload carries.
+  Kind kind = 2;
+  // Serde-encoded openraft request (client → server) — see RaftEnvelope.
+  bytes payload = 3;
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_APPEND_ENTRIES = 1;
+    KIND_VOTE = 2;
+    KIND_INSTALL_SNAPSHOT = 3;
+  }
+}
+
+// One coalesced flush of envelopes for one node pair.
+message MetaRaftBatchRequest {
+  repeated MetaRaftEnvelope envelopes = 1;
+}
+
+// Per-envelope outcomes, positionally aligned with the request's envelopes.
+message MetaRaftBatchReply {
+  message Result {
+    // Serde-encoded `Result<Response, RaftError>` (empty when error is set).
+    bytes payload = 1;
+    // Non-empty on a server-side dispatch failure (unknown group, malformed
+    // payload); the sender maps this to an unreachable-style retry, matching
+    // openraft's transient-error path.
+    string error = 2;
+  }
+  repeated Result results = 1;
+}
+
+// MetaNode replica-to-replica raft transport: a single batched method.
+service MetaRaftTransport {
+  rpc Batch(MetaRaftBatchRequest) returns (MetaRaftBatchReply);
+}

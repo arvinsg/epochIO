@@ -1,0 +1,611 @@
+// epochIO PD control-plane gRPC contract (docs/design/01-pd.md §7).
+//
+// The PD replica set is the server; gateways and DataNodes are clients. This is
+// the Gateway/DataNode-facing surface: periodic heartbeat plus the read APIs for
+// the writable-chunk set and chunk / disk-shard lookup. Extent operations
+// (CreateExtent / SealExtent) are NOT here — they travel on the data-plane
+// binary RPC (epoch-rpc), per the M4 channel split.
+//
+// Terminology follows docs/design/00-overview.md §2 only: Chunk (EC group),
+// Shard (shard slot), Extent (on-disk container). No cubefs/MinIO vocabulary.
+//
+// The PdControl service is implemented in epoch-pd; clients live in epoch-client.
+
+syntax = "proto3";
+
+package epoch.pd;
+
+// Erasure-code parameters PD publishes so gateways can encode (epoch-proto
+// CodeMode; docs/design/04 §1.2). `blob_size` is the 32MB object-segment size.
+message CodeMode {
+  uint32 id = 1;
+  uint32 data = 2;
+  uint32 parity = 3;
+  uint32 stripe_size = 4;
+  uint64 blob_size = 5;
+}
+
+// Lifecycle status of a committed chunk (docs/design/01-pd.md §3). UNSPECIFIED is
+// the proto3 zero value and never sent by a healthy PD.
+enum ChunkStatus {
+  CHUNK_STATUS_UNSPECIFIED = 0;
+  CHUNK_STATUS_WRITABLE = 1;
+  CHUNK_STATUS_FULL = 2;
+  CHUNK_STATUS_SEALED = 3;
+  CHUNK_STATUS_MIGRATING = 4;
+  CHUNK_STATUS_BROKEN = 5;
+}
+
+// One shard slot of a chunk and its current extent binding (01 §3).
+message ShardView {
+  // Epoch-zeroed stable identity `chunk_id<<32 | index<<24`.
+  uint64 shard_prefix = 1;
+  // Current epoch; bumped when the slot is re-bound to a new extent (01 §4.4).
+  uint32 epoch = 2;
+  // Disk the shard's extent lives on.
+  uint32 disk_id = 3;
+  // The bound on-disk extent container (16-byte ExtentId, big-endian layout).
+  bytes extent_id = 4;
+}
+
+// A committed chunk with its shard bindings — the `ChunkView` of 01 §7. Carries
+// the chunk's replicated `epoch`-versioned identity; capacity (free/used) is a
+// heartbeat statistic and is not part of this view.
+message ChunkView {
+  uint32 chunk_id = 1;
+  CodeMode code_mode = 2;
+  ChunkStatus status = 3;
+  repeated ShardView shards = 4;
+}
+
+// Per-disk capacity / liveness statistics carried by a DataNode heartbeat. These
+// stay in PD leader memory and never enter raft (Q18).
+message DiskStats {
+  uint32 disk_id = 1;
+  uint64 free = 2;
+  uint64 used = 3;
+  uint32 writable_extents = 4;
+  // The DataNode has tripped this disk to Broken on an I/O fault (02 §1.8);
+  // PD transitions it to Broken and starts a RepairDisk job. Legacy nodes send
+  // false (proto3 default).
+  bool broken = 5;
+}
+
+// Heartbeat(node, disks{writable_extents,...}) — 01 §7. Full replacement of the
+// node's last-seen and per-disk statistics on the leader.
+message HeartbeatRequest {
+  uint32 node_id = 1;
+  repeated DiskStats disks = 2;
+}
+
+message HeartbeatResponse {}
+
+// GetWritableChunks(code_mode) — periodic pull, no lease (01 §7).
+message GetWritableChunksRequest {
+  uint32 code_mode_id = 1;
+}
+
+message GetWritableChunksResponse {
+  repeated ChunkView chunks = 1;
+}
+
+// GetChunk(chunk_id) — epoch-versioned lookup (01 §7).
+message GetChunkRequest {
+  uint32 chunk_id = 1;
+}
+
+message GetChunkResponse {
+  ChunkView chunk = 1;
+}
+
+// ListDiskShards(disk_id) — enumerate shard slots bound to a disk (01 §7).
+message ListDiskShardsRequest {
+  uint32 disk_id = 1;
+}
+
+message ListDiskShardsResponse {
+  repeated ShardView shards = 1;
+}
+
+// MarkDiskDraining — operator → PD (01 §6.3 DropDisk): mark a disk for
+// decommission. PD transitions it Normal → Draining (excluded from placement,
+// still readable) and starts a DropDisk job that copies its shards elsewhere,
+// then advances it to Dropped. Idempotent — a disk already Draining/Dropped is
+// a no-op.
+message MarkDiskDrainingRequest {
+  uint32 disk_id = 1;
+}
+
+message MarkDiskDrainingResponse {
+  // True if the disk transitioned to Draining (false = already past Normal).
+  bool draining = 1;
+}
+
+// GetLiveWriters — GcRound coordinator → PD (01 §6.3 / Q27): the live-token
+// table. Each entry is a Live writer token, its owning node, and its reported
+// commit watermark W(t). A DataNode uses it to decide which of its blobs'
+// tokens are dead (absent here) or below their watermark. Leader-only (the
+// watermarks are volatile leader memory, Q18).
+message GetLiveWritersRequest {}
+
+message LiveWriter {
+  uint32 writer_token = 1;
+  uint32 node_id = 2;
+  // The token's commit watermark W(t); -1 if it has not reported one.
+  int64 commit_watermark = 3;
+}
+
+message GetLiveWritersResponse {
+  repeated LiveWriter writers = 1;
+}
+
+// ListChunks — coordinator → PD (01 §6.3 InspectRound): a page of committed
+// chunks with id > after, ascending, capped at limit. The inspect coordinator
+// walks every chunk in bounded segments and resumes from its watermark. An empty
+// page marks the end of the round.
+message ListChunksRequest {
+  uint32 after = 1;
+  uint32 limit = 2;
+}
+
+message ListChunksResponse {
+  repeated ChunkView chunks = 1;
+}
+
+// RegisterWriter(node) — issue a fresh, never-reused writer token to a gateway
+// node (01 §4.3). blob_id = writer_token(32) | seq(32); seq is minted locally by
+// the gateway, so there is no blob-id allocation RPC.
+message RegisterWriterRequest {
+  uint32 node_id = 1;
+}
+
+message RegisterWriterResponse {
+  uint32 writer_token = 1;
+}
+
+// WriterHeartbeat(node, token) — keep a writer session alive (01 §4.3). The
+// leader records last-seen in memory (Q18: stats never enter raft) and answers
+// whether the token is still Live. `live = false` (Dead or unknown token)
+// tells the gateway to rotate: a Dead token never revives.
+message WriterHeartbeatRequest {
+  uint32 node_id = 1;
+  uint32 writer_token = 2;
+  // The gateway's GC commit watermark W(t) for this token (Q27): min in-flight
+  // seq − 1, or the cursor's predecessor when idle. -1 = nothing reclaimable.
+  // Leader-only, volatile (Q18) — a GcRound reads it, it never enters raft.
+  int64 commit_watermark = 3;
+}
+
+message WriterHeartbeatResponse {
+  bool live = 1;
+}
+
+// RegisterNode(addr, az, rack, roles) — node self-registration (01 §7).
+// Idempotent by addr; roles is a bitset (DATA=1, GATEWAY=2, META=4).
+message RegisterNodeRequest {
+  string addr = 1;
+  string az = 2;
+  string rack = 3;
+  uint32 roles = 4;
+}
+
+message RegisterNodeResponse {
+  uint32 node_id = 1;
+}
+
+// RegisterDisk(node, az, rack, path, total) — disk self-registration (01 §7).
+// Idempotent by (node_id, path).
+message RegisterDiskRequest {
+  uint32 node_id = 1;
+  string az = 2;
+  string rack = 3;
+  string path = 4;
+  uint64 total = 5;
+}
+
+message RegisterDiskResponse {
+  uint32 disk_id = 1;
+}
+
+// SealChunk(chunk_id) — the migration/decommission fence (01 §4.2): PD marks
+// the chunk Sealed and fans SealExtent out to the shard hosts over the
+// data-plane binary RPC (drain in-flight writes, reject new OPENs); gateways
+// hitting Sealed rewrite the blob to a different chunk.
+message SealChunkRequest {
+  uint32 chunk_id = 1;
+}
+
+message SealChunkResponse {}
+
+// NsMode: bucket namespace mode (03 §3, fixed at creation).
+enum NsMode {
+  NS_MODE_UNSPECIFIED = 0;
+  NS_MODE_FLAT = 1;
+  NS_MODE_HIER = 2;
+}
+
+// MetaEngine: bucket metadata engine policy (03 §7).
+enum MetaEngine {
+  META_ENGINE_UNSPECIFIED = 0;
+  META_ENGINE_ROCKS = 1;
+  META_ENGINE_MEM = 2;
+}
+
+// CreateBucket — create a bucket (idempotent by name; allocates a never-reused id).
+message CreateBucketRequest {
+  string name = 1;
+  NsMode ns_mode = 2;
+  // Inline threshold override in bytes; 0 = cluster default (03 §4.3).
+  uint64 inline_threshold = 3;
+  uint32 codemode_id = 4;
+  MetaEngine engine = 5;
+}
+
+message CreateBucketResponse {
+  uint64 bucket_id = 1;
+}
+
+// BucketInfo: one registered bucket (identity + policy).
+message BucketInfo {
+  uint64 bucket_id = 1;
+  string name = 2;
+  NsMode ns_mode = 3;
+  uint64 inline_threshold = 4;
+  uint32 codemode_id = 5;
+  MetaEngine engine = 6;
+  int64 created_at = 7;
+}
+
+message ListBucketsRequest {}
+
+message ListBucketsResponse {
+  repeated BucketInfo buckets = 1;
+}
+
+// PutConfig — write a cluster-level config KV entry (01 §1 配置中心).
+message PutConfigRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message PutConfigResponse {}
+
+// GetConfig — read one config value (`found=false` when absent).
+message GetConfigRequest {
+  string key = 1;
+}
+
+message GetConfigResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+
+// PutCredential — store (create or replace) an access-key credential (01 §6
+// 认证 N5). The gateway pulls credentials to verify SigV4 locally.
+message PutCredentialRequest {
+  string access_key = 1;
+  string secret_key = 2;
+  // Bucket allow-list; empty + `all_buckets=true` = root (all buckets).
+  repeated string allowed_buckets = 3;
+  bool all_buckets = 4;
+  // Console role (08 §4.1 IAM-lite); UNSPECIFIED = readonly (default).
+  ConsoleRole role = 5;
+}
+
+// Console role for the Web Console (08 §4.1): governs UI visibility + writes,
+// orthogonal to the S3 bucket allow-list.
+enum ConsoleRole {
+  CONSOLE_ROLE_UNSPECIFIED = 0;  // treated as readonly (least privilege)
+  CONSOLE_ROLE_READONLY = 1;
+  CONSOLE_ROLE_ADMIN = 2;
+}
+
+message PutCredentialResponse {}
+
+// ListCredentials — the credential table the gateway caches for SigV4
+// (01 §6 分发: 与可写集合同机制). Secrets stay in-domain (gateway↔PD).
+message ListCredentialsRequest {}
+
+message CredentialInfo {
+  string access_key = 1;
+  string secret_key = 2;
+  repeated string allowed_buckets = 3;
+  bool all_buckets = 4;
+  // Console role (08 §4.1). The console API layer projects `secret_key` off
+  // before returning to the browser; the gateway credential pull keeps it.
+  ConsoleRole role = 5;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialInfo credentials = 1;
+}
+
+// ListNodes — the registered cluster topology (01 §3/§7): gateways resolve
+// disk→node→addr for data-plane shard access and cache the result
+// (periodic refresh + error-driven refresh, 02 §2.1).
+message ListNodesRequest {}
+enum NodeStatus {
+  NODE_STATUS_UNSPECIFIED = 0;
+  NODE_STATUS_STARTING = 1;
+  NODE_STATUS_LIVE = 2;
+  NODE_STATUS_OFFLINE = 3;
+  NODE_STATUS_LOST = 4;
+  NODE_STATUS_DECOMMISSIONED = 5;
+}
+
+message NodeInfo {
+  uint32 node_id = 1;
+  string addr = 2;
+  string az = 3;
+  string rack = 4;
+  // RoleSet bitset (DATA=1, GATEWAY=2, META=4).
+  uint32 roles = 5;
+  NodeStatus status = 6;
+}
+
+enum DiskStatus {
+  DISK_STATUS_UNSPECIFIED = 0;
+  DISK_STATUS_NORMAL = 1;
+  DISK_STATUS_BROKEN = 2;
+  DISK_STATUS_REPAIRING = 3;
+  DISK_STATUS_REPAIRED = 4;
+  DISK_STATUS_DROPPED = 5;
+  DISK_STATUS_DRAINING = 6;
+}
+
+message DiskInfo {
+  uint32 disk_id = 1;
+  uint32 node_id = 2;
+  string path = 3;
+  DiskStatus status = 4;
+}
+
+message ListNodesResponse {
+  repeated NodeInfo nodes = 1;
+  repeated DiskInfo disks = 2;
+}
+
+// === MetaNode partition routing (01 §5, 03 §2) ===
+
+// MetaPartitionView — one partition's route descriptor. `peers` are the raft
+// voter node ids; `leader_node_id`/`leader_addr` come from partition
+// heartbeats (zero/empty until the first heartbeat lands).
+message MetaPartitionView {
+  uint64 partition_id = 1;
+  NsMode ns = 2;
+  // Start/end bounds in (bucket_id, routing_key) coordinates; *_unbounded = ±∞.
+  uint64 start_bucket = 3;
+  bytes start_key = 4;
+  bool start_unbounded = 5;
+  uint64 end_bucket = 6;
+  bytes end_key = 7;
+  bool end_unbounded = 8;
+  repeated uint32 peers = 9;
+  uint32 leader_node_id = 10;
+  string leader_addr = 11;
+  uint64 epoch = 12;
+}
+
+// GetRoute(bucket, 路由key) — the gateway's metadata routing lookup
+// (01 §5: flat=object_key, hier=(parent_ino, name)).
+message GetRouteRequest {
+  uint64 bucket_id = 1;
+  NsMode ns = 2;
+  bytes routing_key = 3;
+}
+
+// `partition` is absent when no partition covers the coordinate (the caller
+// typically needs a CreatePartition first, or must refresh after a split).
+message GetRouteResponse {
+  MetaPartitionView partition = 1;
+}
+
+// CreatePartition — admin/bootstrap creation of a range partition (01 §5;
+// splits in M5b reuse the same route-table mutation path). PD picks three
+// META nodes (AZ-aware) and pushes CreateRaftGroup to them.
+message CreatePartitionRequest {
+  NsMode ns = 1;
+  uint64 start_bucket = 2;
+  bytes start_key = 3;
+  bool start_unbounded = 4;
+  uint64 end_bucket = 5;
+  bytes end_key = 6;
+  bool end_unbounded = 7;
+}
+
+message CreatePartitionResponse {
+  MetaPartitionView partition = 1;
+}
+
+// ListPartitions — the full route table (ops/inspection + tests).
+message ListPartitionsRequest {}
+
+message ListPartitionsResponse {
+  repeated MetaPartitionView partitions = 1;
+}
+
+// One MetaNode's per-partition report inside PartitionHeartbeat.
+message PartitionStat {
+  uint64 partition_id = 1;
+  // The leader as this node sees it (== node_id of the sender when it leads).
+  uint32 leader_node_id = 2;
+  uint64 applied_index = 3;
+  // Inline guard counters (03 §4.3 统计: PD 观测调整 inline 策略).
+  uint64 inline_bytes = 4;
+  uint64 inline_count = 5;
+  // Total live object bytes in the partition — the split-size signal the PD
+  // scheduler thresholds on (01 §5 分裂: size 超阈值). Rebuilt from the
+  // MetaNode inline guard's running total; 0 on legacy nodes (proto3 default).
+  uint64 total_bytes = 6;
+}
+
+// PartitionHeartbeat — MetaNode → PD periodic report (01 §5). Carries the
+// node's hosted partition set so PD can reconcile missing CreateRaftGroup
+// pushes. Leader/statistics stay in PD leader memory (Q18), never raft.
+message PartitionHeartbeatRequest {
+  uint32 node_id = 1;
+  repeated PartitionStat stats = 2;
+  repeated uint64 hosted_partitions = 3;
+}
+
+message PartitionHeartbeatResponse {}
+
+// ListNodeJobs — DataNode → PD (M7, 01 §6): a node polls for the Jobs currently
+// assigned to it as coordinator (job-delivery is pull-based; PD has no reverse
+// channel to DataNodes). Returns the Running jobs whose coordinator == node_id.
+message ListNodeJobsRequest {
+  uint32 node_id = 1;
+}
+
+// One assigned Job the coordinator should be driving (01 §6.1).
+message AssignedJob {
+  uint64 job_id = 1;
+  JobKind kind = 2;
+  // The disk to repair/drop (meaningful for RepairDisk / DropDisk kinds).
+  uint32 disk_id = 3;
+  // The progress watermark to resume from (01 §6.2).
+  uint64 progress_watermark = 4;
+}
+
+// Job kind on the wire (mirrors epoch-pd `JobKind`, 01 §6.3).
+enum JobKind {
+  JOB_KIND_UNSPECIFIED = 0;
+  JOB_KIND_REPAIR_DISK = 1;
+  JOB_KIND_DROP_DISK = 2;
+  JOB_KIND_BALANCE = 3;
+  JOB_KIND_INSPECT_ROUND = 4;
+  JOB_KIND_GC_ROUND = 5;
+}
+
+message ListNodeJobsResponse {
+  repeated AssignedJob jobs = 1;
+}
+
+// CommitJobProgress — coordinator → PD (01 §6.1): batch a progress checkpoint
+// and renew the coordinator lease in one call. `lease_expiry_millis` is the
+// leader's chosen new expiry; PD applies both under the job's ownership.
+message CommitJobProgressRequest {
+  uint64 job_id = 1;
+  uint64 watermark = 2;
+  // When true, the job is complete (terminal); PD marks it Done.
+  bool done = 3;
+}
+
+message CommitJobProgressResponse {}
+
+// CommitShardMapping — coordinator → PD (01 §6.4): rebind one shard slot to a
+// rebuilt extent on a healthy disk and bump its epoch, gated by the Job. The
+// only way a shard mapping changes.
+message CommitShardMappingRequest {
+  uint64 job_id = 1;
+  uint32 chunk_id = 2;
+  uint32 index = 3;
+  uint32 expected_epoch = 4;
+  uint32 new_disk_id = 5;
+  // The rebuilt extent's create_ts (its ExtentId = new shard id | create_ts).
+  int64 new_create_ts = 6;
+  // The committing coordinator node (must own the job).
+  uint32 committer_node_id = 7;
+}
+
+message CommitShardMappingResponse {
+  // The slot's epoch after the rebind (old + 1), or 0 if rejected.
+  uint32 new_epoch = 1;
+  // True when the rebind applied (or was already applied); false = rejected
+  // (not the coordinator, stale epoch, unknown chunk/slot).
+  bool rebound = 2;
+}
+
+// ReportShardRepair — gateway/scrub → PD (01 §6.3 / §6.4 Q5 fast path): report a
+// bad/missing shard observed on the read path (heal-on-read) or by scrub. Best
+// effort — losing it does not affect correctness (the InspectRound backstop
+// catches it). Carries only the shard identity; PD resolves the target node +
+// observed epoch from committed state, so a stale reporter view cannot mis-target.
+message ReportShardRepairRequest {
+  uint32 chunk_id = 1;
+  uint32 index = 2;
+}
+
+message ReportShardRepairResponse {
+  // True when a new repair ticket was recorded; false = one already pending, or
+  // the reported shard is unknown (a benign, stale report).
+  bool created = 1;
+}
+
+// ListNodeShardRepairs — DataNode → PD (01 §6.3): a node polls for the single-
+// shard repairs PD dispatched to it (pull delivery, mirroring ListNodeJobs;
+// ShardRepair has no Job and no coordinator). Returns the tickets whose target
+// node == node_id; the node fetches each chunk's layout via GetChunk to rebuild.
+message ListNodeShardRepairsRequest {
+  uint32 node_id = 1;
+}
+
+// One dispatched single-shard repair the target node should rebuild (01 §6.3).
+message ShardRepairAssignment {
+  uint32 chunk_id = 1;
+  uint32 index = 2;
+  // The slot epoch to rebuild from (the rebind's staleness fence).
+  uint32 expected_epoch = 3;
+}
+
+message ListNodeShardRepairsResponse {
+  repeated ShardRepairAssignment repairs = 1;
+}
+
+// CommitShardRepair — target node → PD (01 §6.3 completion-receipt rebind):
+// rebind the repaired slot to the rebuilt extent (epoch+1), authorized by the
+// pending ShardRepair ticket rather than a Job (01 §6.4 invariant 2). Mirrors
+// CommitShardMapping minus job_id.
+message CommitShardRepairRequest {
+  uint32 chunk_id = 1;
+  uint32 index = 2;
+  uint32 expected_epoch = 3;
+  uint32 new_disk_id = 4;
+  // The rebuilt extent's create_ts (its ExtentId = new shard id | create_ts).
+  int64 new_create_ts = 5;
+  // The committing (target) node (must match the ticket's target).
+  uint32 committer_node_id = 6;
+}
+
+message CommitShardRepairResponse {
+  // The slot's epoch after the rebind (old + 1), or 0 if rejected.
+  uint32 new_epoch = 1;
+  // True when the rebind applied (or was already applied); false = rejected
+  // (no ticket, wrong node, stale epoch, unknown chunk/slot).
+  bool rebound = 2;
+}
+
+// PD control plane. Reads are served with leader ReadIndex semantics; a
+// non-leader replica answers with an error so the client redirects (wired in a
+// later phase).
+service PdControl {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetWritableChunks(GetWritableChunksRequest) returns (GetWritableChunksResponse);
+  rpc GetChunk(GetChunkRequest) returns (GetChunkResponse);
+  rpc ListDiskShards(ListDiskShardsRequest) returns (ListDiskShardsResponse);
+  rpc ListChunks(ListChunksRequest) returns (ListChunksResponse);
+  rpc MarkDiskDraining(MarkDiskDrainingRequest) returns (MarkDiskDrainingResponse);
+  rpc GetLiveWriters(GetLiveWritersRequest) returns (GetLiveWritersResponse);
+  rpc ListNodes(ListNodesRequest) returns (ListNodesResponse);
+  rpc RegisterWriter(RegisterWriterRequest) returns (RegisterWriterResponse);
+  rpc WriterHeartbeat(WriterHeartbeatRequest) returns (WriterHeartbeatResponse);
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc RegisterDisk(RegisterDiskRequest) returns (RegisterDiskResponse);
+  rpc SealChunk(SealChunkRequest) returns (SealChunkResponse);
+  rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse);
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+  rpc PutConfig(PutConfigRequest) returns (PutConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  rpc PutCredential(PutCredentialRequest) returns (PutCredentialResponse);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
+  rpc GetRoute(GetRouteRequest) returns (GetRouteResponse);
+  rpc CreatePartition(CreatePartitionRequest) returns (CreatePartitionResponse);
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  rpc PartitionHeartbeat(PartitionHeartbeatRequest) returns (PartitionHeartbeatResponse);
+  rpc ListNodeJobs(ListNodeJobsRequest) returns (ListNodeJobsResponse);
+  rpc CommitJobProgress(CommitJobProgressRequest) returns (CommitJobProgressResponse);
+  rpc CommitShardMapping(CommitShardMappingRequest) returns (CommitShardMappingResponse);
+  rpc ReportShardRepair(ReportShardRepairRequest) returns (ReportShardRepairResponse);
+  rpc ListNodeShardRepairs(ListNodeShardRepairsRequest) returns (ListNodeShardRepairsResponse);
+  rpc CommitShardRepair(CommitShardRepairRequest) returns (CommitShardRepairResponse);
+}

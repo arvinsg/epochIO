@@ -1,0 +1,35 @@
+[package]
+name = "epoch-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Serialization for ID types and EpochError, enabled by PD/client for RocksDB
+# persistence, openraft snapshots, and raft/gRPC messages. Kept off for the pure
+# data-plane crates so they don't pull serde codegen.
+serde = ["dep:serde"]
+# Control-plane gRPC stubs generated from `src/grpc/*.proto` (docs/design 01 §7).
+# Enabled only by PD (server) and client crates; the build script codegen and
+# tonic/prost runtime are gated on it so downstream data-plane crates never
+# invoke protoc or compile the gRPC stack.
+grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:tonic-prost-build"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
+[build-dependencies]
+# Optional + `grpc`-gated: the build script only references it under the feature,
+# so a default build neither compiles it nor shells out to protoc.
+tonic-prost-build = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,0 +1,30 @@
+[package]
+name = "epoch-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Control-plane gRPC stubs (PdControlClient) live in epoch-proto behind `grpc`.
+epoch-proto = { workspace = true, features = ["grpc"] }
+epoch-rpc = { workspace = true }
+# Client channel + generated stubs (transport + codec come from tonic defaults).
+tonic = { workspace = true }
+# Dyn-friendly async trait for the injectable writer-token source (register is
+# rare — establish + rotation — so the boxed future cost is irrelevant).
+async-trait = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The PdClient end-to-end tests stand up a hand-rolled PdControl server (the
+# generated server trait from epoch-proto) on an OS-assigned loopback port —
+# no dependency on epoch-pd (that would invert the L2 → L3 layering).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time"] }
+tokio-stream = { workspace = true, features = ["net"] }

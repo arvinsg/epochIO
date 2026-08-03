@@ -1,0 +1,41 @@
+[package]
+name = "epoch-pd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+epoch-proto = { workspace = true, features = ["serde", "grpc"] }
+epoch-rocks = { workspace = true }
+epoch-rpc = { workspace = true }
+async-trait = { workspace = true }
+openraft = { workspace = true }
+rocksdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Background liveness ticker: spawn + interval only (the PD process already runs
+# on the Tokio runtime that drives openraft's `TokioRuntime`).
+tokio = { workspace = true, features = ["rt", "time"] }
+# Control-plane gRPC server: PD implements the `PdControl` service generated into
+# epoch-proto (its `grpc` feature). Default features give the transport server
+# and the `async_trait` the generated trait uses.
+tonic = { workspace = true }
+# Web Console (08 §7): PD hosts /console + /api/v1 on a hyper 1 server (same
+# stack as the S3 head, no axum). Frontend product embedded via include_dir;
+# session tokens from OS entropy.
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+include_dir = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tempfile = { workspace = true }
