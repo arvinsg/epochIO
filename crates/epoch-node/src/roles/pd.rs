@@ -20,7 +20,7 @@ use epoch_pd::{
 use crate::config::{ClusterConfig, PdSpec};
 use crate::error::NodeError;
 
-/// Runs the `pd` role for replica `node_id` (the raft node id in `[[pd]]`)
+/// Runs the `pd` role for replica `node_id` (the raft node id in `[[pdnode]]`)
 /// until `shutdown` resolves, then stops the raft node.
 ///
 /// # Errors

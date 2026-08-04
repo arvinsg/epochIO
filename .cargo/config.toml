@@ -1,0 +1,4 @@
+# Enables the documented `cargo xtask <command>` invocation (AGENTS.md §9.1,
+# xtask/src/main.rs usage text) by routing it to the xtask workspace member.
+[alias]
+xtask = "run --package xtask --"

@@ -310,6 +310,9 @@ tbody tr:hover .row-act { opacity: 1; }
 /* login overlay */
 #login-overlay { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center;
   justify-content: center; background: var(--surface-0); }
+/* the id rule above outranks the UA [hidden] rule — without this the overlay
+   stays visible even after JS sets hidden=true (login "does nothing") */
+#login-overlay[hidden] { display: none; }
 .login-card { display: flex; flex-direction: column; gap: 14px; width: 320px; padding: 28px;
   background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
   box-shadow: var(--shadow-card); }

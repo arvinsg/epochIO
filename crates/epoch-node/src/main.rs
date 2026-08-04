@@ -6,7 +6,7 @@
 //! `epochio --role data --config <file> --node <id>` assembles the storage
 //! engine and serves the data plane until Ctrl-C; `--role pd --node <id>` runs
 //! one PD replica (raft peer + control plane). `epochio dev --config <file>`
-//! spawns every `[[pd]]` and `[[node]]` in the config as child processes and
+//! spawns every `[[pdnode]]` and `[[node]]` in the config as child processes and
 //! supervises them until Ctrl-C.
 
 use std::process::ExitCode;

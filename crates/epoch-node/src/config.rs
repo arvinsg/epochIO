@@ -32,7 +32,7 @@ pub struct ClusterConfig {
     /// mode: registration, heartbeats, and PD-driven chunk creation (M4).
     #[serde(default)]
     pub pd: Vec<String>,
-    /// PD replicas (`[[pd]]` tables): the `pd` role picks itself by raft id.
+    /// PD replicas (`[[pdnode]]` tables): the `pd` role picks itself by raft id.
     #[serde(rename = "pdnode", default)]
     pub pdnodes: Vec<PdSpec>,
     /// The nodes in the cluster (`[[node]]` tables).
@@ -408,7 +408,7 @@ pub struct ChunkSpec {
     pub shards: Vec<u32>,
 }
 
-/// One PD replica (`[[pd]]` table): its raft node id, gRPC address, and the
+/// One PD replica (`[[pdnode]]` table): its raft node id, gRPC address, and the
 /// directory its raft stores live in.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -518,7 +518,7 @@ impl ClusterConfig {
     ///
     /// # Panics
     ///
-    /// Panics if no `[[pd]]` is defined (the caller checks before use).
+    /// Panics if no `[[pdnode]]` is defined (the caller checks before use).
     #[must_use]
     pub fn bootstrap_pd_id(&self) -> u64 {
         self.pdnodes
@@ -649,7 +649,7 @@ shards = [0, 1, 2]
     fn the_shipped_example_config_parses() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/deploy/cluster.example.toml"
+            "/../../draft/deploy/cluster.example.toml"
         );
         let text = std::fs::read_to_string(path).expect("example config is present");
         let cfg = ClusterConfig::parse(&text).expect("example config parses and validates");
