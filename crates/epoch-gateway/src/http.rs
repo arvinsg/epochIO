@@ -1,3 +1,17 @@
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! The S3 HTTP head (M6): implements the [`s3s::S3`] trait over the
 //! [`ObjectService`] orchestrator, so a real S3 client (`aws s3`, s3cmd) drives
 //! the EC + MetaNode pipeline. `s3s` owns HTTP/XML parsing, SigV4 verification

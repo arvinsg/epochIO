@@ -1,3 +1,17 @@
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Flat-namespace ops through a real raft group, headlined by the reference
 //! reconciliation check of 07 §M5a acceptance: under concurrent overwrites of
 //! one key, every slice ever written must be referenced exactly once at the

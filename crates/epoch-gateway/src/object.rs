@@ -1,3 +1,17 @@
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! The S3 object orchestrator (M6): ties the EC write/read [`Gateway`] to the
 //! MetaNode metadata client, with the inline-vs-EC decision and the EC-buffer
 //! admission gate. This is the layer the S3 HTTP head (M6-3) drives, one method

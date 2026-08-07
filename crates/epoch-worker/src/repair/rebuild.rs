@@ -1,3 +1,17 @@
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Rebuilding one EC shard's on-disk body from its stripe-peers (04 §5 repair
 //! reconstruction). A repair subtask reads the surviving `data + parity` shard
 //! bodies of a blob, and this pure function regenerates the *framed body* of a

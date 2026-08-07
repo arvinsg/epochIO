@@ -1,3 +1,17 @@
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! The MetaNode gRPC service: PD-facing partition admin plus gateway-facing
 //! flat-namespace metadata ops (06 §9 service.rs — gRPC 服务装配 +
 //! 请求→分区路由 + NotLeader/PartitionMoved 回错).

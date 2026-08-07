@@ -1,17 +1,16 @@
-//! Wire I/O primitives and the client-side multiplexed connection.
-//!
-//! One TCP connection carries many concurrent streams, demultiplexed by
-//! `stream_id`. A background reader task routes each inbound response frame to
-//! the oneshot registered for its stream; the write half is shared behind an
-//! async mutex so concurrent senders never interleave a frame's bytes.
-//!
-//! Framing is zero-copy on the hot path: a frame is written with a single
-//! `write_vectored` of `[header, body]` (the body `Bytes` is never copied into
-//! a combined buffer), and an inbound body is a slice of one receive buffer.
-//! Only the header is checksummed — a data body is a bitrot frame with its own
-//! BLAKE3 (frame.rs).
-//!
-//! Design: docs/design/02-datanode.md §5
+// Copyright 2026 arvinsg
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 use std::collections::HashMap;
 use std::io::{self, IoSlice};
