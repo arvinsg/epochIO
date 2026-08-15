@@ -23,8 +23,6 @@
 //! ([`RouteError::KIND_NOT_LEADER`] with the hint otherwise). Writes propose
 //! one raft entry (03 §5: 全部单分区单 propose); reads run through
 //! `ensure_linearizable` (leader ReadIndex, 03 §5: 读路径 0 轮次).
-//!
-//! Design: docs/design/03-metanode.md §5; docs/design/01-pd.md §5
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

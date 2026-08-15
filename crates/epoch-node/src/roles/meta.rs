@@ -21,8 +21,7 @@
 //! nodes (01 §5 分区创建), and a restart re-opens whatever the registry
 //! persisted (03 §8 kill -9 恢复). The role only wires the runtime together.
 //!
-//! Design: docs/design/03-metanode.md; docs/design/01-pd.md §5;
-//! docs/design/07-iteration-plan.md (M5)
+//! draft/design/07-iteration-plan.md (M5)
 
 use std::future::Future;
 use std::sync::Arc;

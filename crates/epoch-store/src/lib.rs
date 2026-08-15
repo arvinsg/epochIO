@@ -19,11 +19,9 @@
 //! DataNode resolves the current extent locally (compaction rebind never
 //! reaches PD).
 //!
-//! Design: docs/design/02-datanode.md §1; docs/design/06-code-layout.md §6
-//!
 //! M2 delivers the single-node core end to end: superblock/disk, extent files,
 //! index, blob write/read, compaction, Background-QoS and scrub
-//! (docs/design/07-iteration-plan.md).
+//! (draft/design/07-iteration-plan.md).
 
 pub mod compact;
 pub mod disk;

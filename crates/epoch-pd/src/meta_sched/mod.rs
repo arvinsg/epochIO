@@ -22,8 +22,6 @@
 //! Layering mirrors the chunk placement loop ([`crate::chunk::driver`]): a pure
 //! decision layer ([`plan`]) feeds a serializing controller ([`operator`]),
 //! which a leader-gated ticker ([`driver`]) turns into proposals + pushes.
-//!
-//! Design: docs/design/01-pd.md §5; docs/design/03-metanode.md §2
 
 pub mod driver;
 pub mod operator;

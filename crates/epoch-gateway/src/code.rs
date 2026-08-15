@@ -18,7 +18,7 @@
 //!
 //! This stands in for the MetaNode `ObjectMeta` that M5 will persist: a PUT
 //! returns an [`ObjectLayout`] and a GET consumes it, with no MetaNode in the
-//! loop. Design: docs/design/04-ec-io.md §3.1; docs/design/06-code-layout.md §10.
+//! loop. Design: draft/design/04-ec-io.md §3.1; draft/design/06-code-layout.md §10.
 
 use epoch_ec::Erasure;
 use epoch_proto::{BlobId, ChunkId, NodeId, ShardId};
@@ -27,8 +27,6 @@ use crate::error::GatewayError;
 
 /// Erasure code parameters for an object: `data + parity` shards, a stripe
 /// (coding unit) size, and the blob (object cut) size.
-///
-/// Design: docs/design/04-ec-io.md §1.2/§2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeMode {
     /// Data shards per stripe (`N`).
@@ -101,7 +99,7 @@ impl CodeMode {
 
     /// Shards that must commit for a durable write: `data + parity − t` with
     /// `t = max(1, parity / 2)`, so `t` failures are tolerated while `parity − t`
-    /// slack remains for later repair. Design: docs/design/99-open-questions.md
+    /// slack remains for later repair. Design: draft/design/99-open-questions.md
     /// Q5 (v0.13).
     /// The effective write quorum: the explicit override when set (10 §3 缺口 C),
     /// else the legacy derived formula (`total − max(1, parity/2)`).
@@ -116,7 +114,7 @@ impl CodeMode {
 
 /// The shard slots of one chunk and the node each lives on. `shards[i]` is the
 /// slot for EC shard index `i` (`0..data+parity`): data shards first, then
-/// parity. Design: docs/design/01-pd.md §3; docs/design/04-ec-io.md §3.1.
+/// parity. Design: draft/design/01-pd.md §3; draft/design/04-ec-io.md §3.1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkPlacement {
     /// The chunk these shards belong to.

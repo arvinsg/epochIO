@@ -34,8 +34,6 @@
 //! GET fetches the full slice list (`GetObjectMeta`), rebuilds the layout via
 //! the chunk map, and reconstructs through the EC read path; inline objects
 //! return their bytes directly. HEAD/DELETE/LIST are thin MetaNode passthroughs.
-//!
-//! Design: docs/design/00-overview.md §5; docs/design/03-metanode.md §4.3/§5
 
 use std::sync::Arc;
 

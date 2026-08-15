@@ -27,8 +27,6 @@
 //!
 //! epoch/PD-map reconciliation (forced release of epoch-stale extents, 02 §1.9)
 //! needs the PD mapping and lands with control-plane integration (M4+).
-//!
-//! Design: docs/design/02-datanode.md §1.9
 
 use std::collections::BTreeMap;
 

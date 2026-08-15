@@ -39,8 +39,6 @@
 //! commands (report / clear) while an in-memory index serves the node-pull RPC.
 //! Keyed by `shard_prefix` (the epoch-zeroed stable shard identity, so a ticket
 //! survives the very epoch bump its own rebind performs).
-//!
-//! Design: docs/design/01-pd.md §6.3 (dispatch); §6.4 (invariant 2 / Q5)
 
 // The apply / snapshot methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

@@ -29,8 +29,6 @@
 //! captures (a) an overwritten existing object's slices and (b) uploaded but
 //! unlisted parts' slices into `delq` — same batch, same 03 §5 contract as
 //! Put/Delete.
-//!
-//! Design: docs/design/03-metanode.md §4.1/§5
 
 use std::time::Duration;
 

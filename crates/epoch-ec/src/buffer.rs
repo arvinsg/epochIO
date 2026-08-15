@@ -17,8 +17,6 @@
 //! Holds a stripe's `N+M` shards in a single allocation (cache-friendly and
 //! reusable by a pool) while exposing them as `count` disjoint `unit`-sized
 //! slices. RS coding is position-dependent, so slot index equals shard index.
-//!
-//! Design: docs/design/04-ec-io.md §4; docs/design/06-code-layout.md §3
 
 /// A single contiguous allocation of `count` equal-length shard slots.
 #[derive(Debug)]

@@ -26,8 +26,6 @@
 //! INVARIANT(design 01 §2 / AGENTS §8): ids come from the persisted counter, so
 //! allocation is deterministic across replicas; the counter key is 7 bytes and
 //! can never collide with a 4-byte record key.
-//!
-//! Design: docs/design/01-pd.md §1 (ID allocation); §2 (apply / snapshot)
 
 // These helpers return openraft's intentionally-large `StorageError` (see the
 // `raft` module): they run inside the raft state machine on behalf of the

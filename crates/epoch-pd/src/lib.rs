@@ -24,8 +24,6 @@
 //! ([`cluster`]) is the first domain manager; its state is shared with the read
 //! path through [`state::PdState`]. Chunk / writer registry / bucket managers
 //! land in later phases.
-//!
-//! Design: docs/design/01-pd.md; docs/design/06-code-layout.md §8
 
 pub mod bucket;
 pub mod chunk;

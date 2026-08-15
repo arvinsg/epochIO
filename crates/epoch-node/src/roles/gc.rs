@@ -30,8 +30,6 @@
 //! the existing compaction pass). A missing partition/live-table read aborts the
 //! round (better to skip a round than reclaim against a partial keep-set —
 //! reclaiming a referenced blob would be data loss).
-//!
-//! Design: docs/design/01-pd.md §6.3; docs/design/99-open-questions.md Q20/Q27
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

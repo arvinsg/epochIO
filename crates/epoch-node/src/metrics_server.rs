@@ -20,8 +20,6 @@
 //! Built on the workspace's hyper 1 + hyper-util (no axum, per 08 §7). The
 //! endpoint is best-effort observability: a bind failure is logged and the role
 //! serves without it rather than failing startup.
-//!
-//! Design: docs/design/08-web-console.md §5.1/§7
 
 use std::convert::Infallible;
 use std::net::SocketAddr;

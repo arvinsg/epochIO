@@ -25,8 +25,6 @@
 //! shard whose extent is missing/unreadable reads as absent). A subtask is
 //! idempotent and side-effect-light: it only *reports* (best-effort), never
 //! mutates, so re-running one is always safe.
-//!
-//! Design: docs/design/01-pd.md §6.3/§6.4; docs/design/04-ec-io.md §4
 
 use std::sync::Arc;
 

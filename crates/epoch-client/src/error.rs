@@ -19,8 +19,6 @@
 //! mapping) and running the local `writer_token` session (its liveness gate).
 //! gRPC [`Status`](tonic::Status) values are mapped to semantic variants at the
 //! client boundary so callers act on meaning, not transport codes.
-//!
-//! Design: docs/design/01-pd.md §7 (control plane); §4.3 (writer session)
 
 use tonic::{Code, Status};
 

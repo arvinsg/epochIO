@@ -34,8 +34,6 @@
 //! - **migrate**: the driver proposes the PD-side voter swap, then pushes
 //!   `PrepareMigrateTarget` + `MigrateGroupMember` so the MetaNode performs the
 //!   openraft membership change (data movement).
-//!
-//! Design: docs/design/01-pd.md §5; docs/design/03-metanode.md §2
 
 use std::sync::Arc;
 use std::time::Duration;

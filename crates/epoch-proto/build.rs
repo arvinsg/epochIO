@@ -16,8 +16,6 @@
 //! feature is enabled. Without the feature the script is a no-op — it neither
 //! references `tonic-prost-build` (an optional build dependency) nor invokes
 //! `protoc`, so the pure data-plane crates build with no extra tooling.
-//!
-//! Design: docs/design/01-pd.md §7; docs/design/06-code-layout.md §1
 
 fn main() {
     #[cfg(feature = "grpc")]

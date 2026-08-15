@@ -21,8 +21,6 @@
 //! the backing column families and applies the commands. Per-chunk capacity
 //! (`free` / `used`) is heartbeat-derived leader memory (Q18) and is not part of
 //! this replicated state.
-//!
-//! Design: docs/design/01-pd.md §3 (Chunk model); §4.1 (creation / recovery)
 
 pub mod driver;
 pub mod manager;

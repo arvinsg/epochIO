@@ -18,8 +18,6 @@
 //! M2 only needs the enum and its stable on-disk encoding (persisted inside
 //! `ExtentMeta`, see [`crate::index`]); the transition state machine (compaction
 //! rebind, repair) lands with those features in a later milestone.
-//!
-//! Design: docs/design/02-datanode.md §1.5
 
 /// Lifecycle status of an extent (persisted as a single byte in the index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

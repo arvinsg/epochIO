@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! criterion benchmarks for epoch-ec: EC12+4 encode/reconstruct and BLAKE3
-//! bitrot framing throughput. Design: docs/design/07-iteration-plan.md M1.
+//! bitrot framing throughput. Design: draft/design/07-iteration-plan.md M1.
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use epoch_ec::Erasure;

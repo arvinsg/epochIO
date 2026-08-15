@@ -20,8 +20,6 @@
 //! The directory `crates/epoch-pd/console/` holds the shippable product
 //! (`index.html` + logo SVGs); it is embedded at build time. Adding a file to
 //! that directory makes it servable without touching this module.
-//!
-//! Design: docs/design/08-web-console.md §1, §7
 
 use include_dir::{Dir, include_dir};
 

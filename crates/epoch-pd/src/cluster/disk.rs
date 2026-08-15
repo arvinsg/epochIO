@@ -27,8 +27,7 @@
 //! heartbeat statistics (free, writable_extents) stay in leader memory and never
 //! enter raft (Q18) — they arrive with heartbeat handling in a later phase.
 //!
-//! Design: docs/design/01-pd.md §1 (disk state machine); §3 (Disk model);
-//! docs/design/02-datanode.md §1.8 (Broken reporting)
+//! draft/design/02-datanode.md §1.8 (Broken reporting)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

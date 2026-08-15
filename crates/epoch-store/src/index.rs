@@ -31,8 +31,6 @@
 //! `deleted_bytes`, seal/compaction merge `status`. Full-value puts are
 //! reserved for creation/recovery installs, so concurrent owners can never
 //! roll back each other's fields (02 §1.6/§1.7).
-//!
-//! Design: docs/design/02-datanode.md §1.3/§1.4/§1.6
 
 use std::path::Path;
 

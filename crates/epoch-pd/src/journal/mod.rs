@@ -18,8 +18,6 @@
 //! [`PdEntry`] to the raft group and returns the applied [`ApplyResult`]. The
 //! journal owns the running raft node; domain managers (cluster / chunk / …)
 //! propose through it in later phases.
-//!
-//! Design: docs/design/01-pd.md §2
 
 pub mod client;
 pub mod entry;

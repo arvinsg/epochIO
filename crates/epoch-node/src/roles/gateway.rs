@@ -22,8 +22,6 @@
 //! driver) → object service; plus the M6 metadata client, caches, and the S3
 //! head. The gateway is stateless beyond its writer-token session, so a restart
 //! re-registers and re-establishes.
-//!
-//! Design: docs/design/00-overview.md §3/§5; docs/design/07-iteration-plan.md M6
 
 use std::future::Future;
 use std::net::SocketAddr;

@@ -27,8 +27,6 @@
 //! ([`rebuild_shard_body`]), write it to a `Rebuilding` extent, promote, then
 //! rebind. It is idempotent end to end — a re-dispatch after a crash finds the
 //! already-rebound slot (ticket cleared) and reports it done.
-//!
-//! Design: docs/design/01-pd.md §6.3/§6.4; docs/design/04-ec-io.md §4/§5
 
 use std::sync::Arc;
 

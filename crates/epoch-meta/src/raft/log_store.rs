@@ -33,7 +33,6 @@
 //! keyspaces disjoint. Appends/votes are fsync'd before acknowledging,
 //! honoring raft's persist-before-ack contract (same as the PD store).
 //!
-//! Design: docs/design/03-metanode.md §8; docs/design/06-code-layout.md §9
 //! (raft/log_store.rs)
 
 use std::fmt::Debug;

@@ -15,8 +15,6 @@
 //! [`MuxTransport`]: routes each shard op to the in-process [`LocalTransport`]
 //! when the target is the co-located node, and to the remote [`RemoteTransport`]
 //! otherwise (Q21: the gateway bypasses the network for its own node's shards).
-//!
-//! Design: docs/design/02-datanode.md §2; docs/design/99-open-questions.md (Q21)
 
 use std::sync::Arc;
 

@@ -20,8 +20,6 @@
 //! current-snapshot record are owned by [`super::state_machine`]; this builder
 //! only allocates a unique snapshot index and delegates to
 //! [`build_snapshot`](super::state_machine::build_snapshot).
-//!
-//! Design: docs/design/01-pd.md §2; docs/design/06-code-layout.md §8
 
 use std::sync::atomic::Ordering;
 

@@ -23,8 +23,6 @@
 //!   - `commit_blob`  → the shared integrity gate (frame count + CRC, 04 §3.1)
 //!     then [`StorageEngine::write`];
 //!   - `read_shard`   → [`StorageEngine::read_shard`].
-//!
-//! Design: docs/design/02-datanode.md §5; docs/design/06-code-layout.md §6
 
 use async_trait::async_trait;
 use bytes::Bytes;

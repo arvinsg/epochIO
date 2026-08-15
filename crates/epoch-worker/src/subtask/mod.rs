@@ -23,8 +23,6 @@
 //! with the data-plane wiring they need (seal fence, shard rebind, EC rebuild);
 //! this phase supplies the contract the coordinator drives against and a test
 //! stub proving the framework.
-//!
-//! Design: docs/design/01-pd.md §6.2; docs/design/02-datanode.md §3.2
 
 use async_trait::async_trait;
 

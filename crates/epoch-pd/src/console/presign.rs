@@ -27,8 +27,6 @@
 //! module signs is one `s3s` accepts: query params URI-encoded and sorted, the
 //! `X-Amz-Signature` param itself excluded, only the `host` header signed, and
 //! an `UNSIGNED-PAYLOAD` body marker (the body is unknown at signing time).
-//!
-//! Design: docs/design/08-web-console.md §4; AWS SigV4 query-string auth.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};

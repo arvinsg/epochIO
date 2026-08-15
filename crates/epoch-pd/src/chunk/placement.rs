@@ -24,8 +24,6 @@
 //! first and new writes are drawn onto it. Placement also enforces topology
 //! anti-affinity so a single fault domain cannot hold two shards of one EC
 //! stripe.
-//!
-//! Design: docs/design/01-pd.md §4.1 (watermark-driven creation, anti-affinity)
 
 use epoch_proto::{DiskId, NodeId};
 

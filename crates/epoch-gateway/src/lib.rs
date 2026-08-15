@@ -26,9 +26,6 @@
 //! The [`ObjectLayout`] a PUT returns and a GET consumes stands in for the
 //! MetaNode object record until M5. S3 protocol, SigV4 auth, inline objects,
 //! ETag, listing and multipart arrive in M6.
-//!
-//! Design: docs/design/02-datanode.md §2; docs/design/04-ec-io.md §3/§4;
-//! docs/design/06-code-layout.md §10.
 
 pub mod admission;
 pub mod auth;

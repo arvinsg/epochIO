@@ -31,7 +31,6 @@
 //! [`RPCError::Network`]. A failed batch fails only its own envelopes;
 //! heartbeats of the next window retry normally.
 //!
-//! Design: docs/design/03-metanode.md §8; docs/design/06-code-layout.md §9
 //! (raft/network.rs)
 
 use std::collections::BTreeMap;

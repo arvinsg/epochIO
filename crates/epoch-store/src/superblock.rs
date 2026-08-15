@@ -19,8 +19,6 @@
 //! not ordering keys (only index keys need big-endian, see `epoch-proto`).
 //! Crash-safe update (two copies, tail-before-head) is the caller's job
 //! ([`crate::disk`]); this module only encodes/decodes one copy.
-//!
-//! Design: docs/design/02-datanode.md §1.1
 
 use epoch_proto::DiskId;
 

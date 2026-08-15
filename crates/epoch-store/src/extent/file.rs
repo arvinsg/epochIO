@@ -25,8 +25,6 @@
 //! header is fully self-describing without duplicating those fields. Positioned
 //! reads/writes (Unix `FileExt`) keep the append cursor independent of any file
 //! seek position.
-//!
-//! Design: docs/design/02-datanode.md §1.2/§1.7
 
 use std::fs::OpenOptions;
 use std::io;

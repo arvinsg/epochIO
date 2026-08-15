@@ -21,8 +21,6 @@
 //! thread pools and depth-based admission (Background half-full drop → 429)
 //! arrive with the async data plane (M3, which has a runtime); a synchronous
 //! byte-rate token bucket is the piece M2 needs now.
-//!
-//! Design: docs/design/02-datanode.md §1.7
 
 use std::time::{Duration, Instant};
 

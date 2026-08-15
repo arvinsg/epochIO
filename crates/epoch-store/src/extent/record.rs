@@ -26,8 +26,6 @@
 //! disk scalars are little-endian; only order-sensitive index keys use
 //! big-endian (see `epoch-proto`). Body framing (`[BLAKE3(32B) | unit]*`) is
 //! produced by the write path via `epoch-ec`; this module is body-agnostic.
-//!
-//! Design: docs/design/02-datanode.md §1.2
 
 use epoch_proto::{BlobId, ShardId};
 

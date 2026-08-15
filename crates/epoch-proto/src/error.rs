@@ -15,8 +15,8 @@
 //! Cross-component error codes.
 //!
 //! This enum is the contract that drives cache invalidation across the gateway,
-//! data plane and metadata plane. Design: docs/design/06-code-layout.md §1;
-//! docs/design/02-datanode.md §2.1.
+//! data plane and metadata plane. Design: draft/design/06-code-layout.md §1;
+//! draft/design/02-datanode.md §2.1.
 
 /// Errors exchanged across epochIO components.
 ///

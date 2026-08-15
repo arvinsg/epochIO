@@ -18,8 +18,6 @@
 //! crate emits consistently namespaced series (AGENTS.md §9.3). Two shared
 //! histogram bucket sets keep latency and size distributions comparable across
 //! subsystems.
-//!
-//! Design: docs/design/06-code-layout.md §2
 
 use std::sync::OnceLock;
 

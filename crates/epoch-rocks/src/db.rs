@@ -19,8 +19,6 @@
 //! business reads/writes — no abstraction leakage (06 §5). [`open_cfs`] opens a
 //! database with explicit column families for the PD/Meta state machine, which
 //! partitions its key space by module (01 §2).
-//!
-//! Design: docs/design/06-code-layout.md §5; docs/design/02-datanode.md §1.3
 
 use std::path::Path;
 

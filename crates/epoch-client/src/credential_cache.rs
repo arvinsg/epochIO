@@ -16,8 +16,6 @@
 //! SigV4 verification (01 §6 分发: gateway 周期拉取账号表, 秘钥不出域). The
 //! gateway never round-trips PD per request — it pulls the credential table and
 //! caches it, refreshing on a miss and periodically (like [`BucketCache`]).
-//!
-//! Design: docs/design/01-pd.md §6
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

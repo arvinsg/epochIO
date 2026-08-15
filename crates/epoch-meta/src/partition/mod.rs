@@ -21,8 +21,6 @@
 //! ([`PartitionRange::contains`] parses the embedded routing key, 03 §2
 //! 归属规则), which is what makes the zero-transaction axiom mechanically
 //! checkable (03 §1).
-//!
-//! Design: docs/design/03-metanode.md §2 (分区模型与归属规则), §4.1 (导出连续性)
 
 use epoch_proto::BucketId;
 use serde::{Deserialize, Serialize};

@@ -14,16 +14,19 @@
 
 //! Dependency-layering verification.
 //!
-//! Enforces the L0–L4 layering defined in docs/design/06-code-layout.md §0
-//! (mirrored in AGENTS.md §9.1): a workspace crate may depend only on crates in
-//! a strictly lower layer (same-layer dependencies are forbidden), and
-//! `epoch-ec` must stay pure computation (no tokio / I/O crates).
+//! Enforces the L0–L4 layering the design docs define for the workspace (06 §0,
+//! mirrored in AGENTS.md §4): a crate may depend only on crates in a strictly
+//! lower layer (same-layer dependencies are forbidden), and `epoch-ec` must stay
+//! pure computation (no tokio / I/O crates).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Authoritative crate→layer whitelist. Mirrors docs/design/06 §0; adding a new
-/// crate to the workspace requires registering it here.
+use crate::report::Outcome;
+use crate::source;
+
+/// Authoritative crate→layer whitelist. Mirrors 06 §0; adding a new crate to the
+/// workspace requires registering it here.
 const LAYERS: &[(&str, u8)] = &[
     ("epoch-proto", 0),
     ("epoch-telemetry", 0),
@@ -55,31 +58,15 @@ const EC_FORBIDDEN: &[&str] = &[
 
 /// Runs the layer check and reports the outcome.
 pub fn run() -> ExitCode {
-    match check() {
-        Ok(violations) if violations.is_empty() => {
-            println!("xtask layers: OK ({} crates checked)", LAYERS.len());
-            ExitCode::SUCCESS
-        }
-        Ok(violations) => {
-            eprintln!("xtask layers: {} violation(s) found:", violations.len());
-            for v in &violations {
-                eprintln!("  - {v}");
-            }
-            ExitCode::FAILURE
-        }
-        Err(e) => {
-            eprintln!("xtask layers: error: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    crate::report::report("layers", check())
 }
 
 /// Scans every crate manifest and returns the list of layering violations.
 ///
 /// `Err` is reserved for tool-level failures (e.g. unreadable manifests); an
-/// empty `Ok` vector means the workspace is clean.
-fn check() -> Result<Vec<String>, String> {
-    let crates_dir = workspace_root().join("crates");
+/// empty violation list means the workspace is clean.
+pub fn check() -> Result<Outcome, String> {
+    let crates_dir = source::workspace_root().join("crates");
 
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&crates_dir)
         .map_err(|e| format!("read {}: {e}", crates_dir.display()))?
@@ -87,6 +74,7 @@ fn check() -> Result<Vec<String>, String> {
         .filter(|p| p.join("Cargo.toml").is_file())
         .collect();
     dirs.sort();
+    let crate_count = dirs.len();
 
     let mut violations = Vec::new();
     for dir in dirs {
@@ -105,7 +93,7 @@ fn check() -> Result<Vec<String>, String> {
         let Some(self_layer) = layer_of(name) else {
             violations.push(format!(
                 "crate '{name}' is not registered in the layer table \
-                 (update xtask/src/layers.rs and docs/design/06 §0)"
+                 (update xtask/src/layers.rs and 06 §0)"
             ));
             continue;
         };
@@ -128,7 +116,7 @@ fn check() -> Result<Vec<String>, String> {
         }
     }
 
-    Ok(violations)
+    Ok(Outcome::new(crate_count, "crates", violations))
 }
 
 /// A dependency is allowed only if it sits in a strictly lower layer.
@@ -159,13 +147,6 @@ fn dep_names(manifest: &toml::Value) -> Vec<String> {
     names
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("xtask manifest dir always has a parent (the workspace root)")
-        .to_path_buf()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,7 +173,7 @@ mod tests {
     #[test]
     fn workspace_passes_its_own_layer_check() {
         assert!(
-            check().expect("layer check should run").is_empty(),
+            check().expect("layer check should run").is_clean(),
             "the repository must satisfy its own layering rules"
         );
     }

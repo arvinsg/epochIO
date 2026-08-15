@@ -29,7 +29,6 @@
 //! at MetaNode registration) zero-extended — unlike PD replicas, MetaNodes
 //! join an existing cluster, so they reuse the cluster id namespace.
 //!
-//! Design: docs/design/03-metanode.md §8; docs/design/06-code-layout.md §9
 //! (raft/mod.rs)
 
 // openraft's `StorageError` is intentionally large (its own crate allows this

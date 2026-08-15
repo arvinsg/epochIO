@@ -33,8 +33,6 @@
 //!   'u'  parent_ino(u64 BE) | name | upload_id(16B) | part_no(u32 BE)
 //!   'q'  parent_ino(u64 BE) | name | seq(u64 BE) | seg_no(u32 BE)
 //! ```
-//!
-//! Design: docs/design/03-metanode.md §2/§4.1
 
 use epoch_proto::BucketId;
 

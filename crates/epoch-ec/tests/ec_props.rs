@@ -14,8 +14,6 @@
 
 //! Property tests for the epoch-ec core: arbitrary-length round-trip, recovery
 //! from any `<= parity` losses, and mandatory bitrot detection.
-//!
-//! Design: docs/design/07-iteration-plan.md M1; docs/design/04-ec-io.md.
 
 use epoch_ec::Erasure;
 use epoch_ec::frame::{verify_frame, verify_shard_body, write_frame};

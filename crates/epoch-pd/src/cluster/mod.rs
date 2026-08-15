@@ -19,8 +19,6 @@
 //! dispatched from the state machine. INVARIANT(design 01 §2 / Q18): apply is
 //! deterministic — it never reads wall-clock time, randomness, or heartbeat
 //! statistics, so every replica derives the same state from the same log.
-//!
-//! Design: docs/design/01-pd.md §1 (cluster membership); §3 (Node / Disk model)
 
 pub mod disk;
 pub mod heartbeat;

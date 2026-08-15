@@ -19,8 +19,6 @@
 //! failure, 04 §3.3): a write that still reaches [`crate::CodeMode::write_quorum`]
 //! shards succeeds, and a read that still has `data` shards reconstructs. Only
 //! when tolerance is exhausted does a call fail with one of these.
-//!
-//! Design: docs/design/04-ec-io.md §3.3/§4
 
 use epoch_ec::EcError;
 

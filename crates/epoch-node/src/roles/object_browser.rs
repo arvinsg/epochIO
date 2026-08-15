@@ -23,8 +23,6 @@
 //! Download is not here: object bytes go via a 302 to a gateway (08 §4), which
 //! needs a caller credential the console session does not hold; that mechanism
 //! is undecided (presigned URL pending), so only metadata reads are wired.
-//!
-//! Design: docs/design/08-web-console.md §4
 
 use async_trait::async_trait;
 use epoch_client::MetaClient;

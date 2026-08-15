@@ -18,10 +18,8 @@
 //! guaranteeing consistent field names and label conventions (AGENTS.md §9.3).
 //! Direct initialization of `tracing`/`prometheus` elsewhere is disallowed.
 //!
-//! Design: docs/design/06-code-layout.md §2; docs/design/05-ai-roadmap.md §1.4
-//!
 //! M0 delivers logging + metrics init; `trace`/`runtime` land with the data
-//! plane (docs/design/07-iteration-plan.md).
+//! plane (draft/design/07-iteration-plan.md).
 
 pub mod logging;
 pub mod metrics;

@@ -23,8 +23,6 @@
 //! the pool smooths bursts instead of failing them, unless a single object
 //! exceeds the whole pool (a configuration error surfaced as
 //! [`GatewayError::AdmissionTooLarge`]).
-//!
-//! Design: docs/design/00-overview.md §5; docs/design/99-open-questions.md N3
 
 use std::sync::Arc;
 
@@ -136,7 +134,6 @@ mod tests {
             "acquire must block while the pool is full"
         );
         drop(held);
-        // Now it proceeds.
         pending.await.expect("acquire after release");
     }
 }

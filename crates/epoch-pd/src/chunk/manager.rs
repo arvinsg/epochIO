@@ -33,8 +33,6 @@
 //! INVARIANT(design 01 §2 / AGENTS §8): apply is deterministic — chunk ids come
 //! from the persisted counter and shard / extent ids are derived from the
 //! command's leader-chosen `epoch` / `create_ts`, never from a clock read here.
-//!
-//! Design: docs/design/01-pd.md §3 (Chunk model); §4.1 (creation / recovery)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

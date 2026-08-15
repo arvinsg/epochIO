@@ -17,8 +17,6 @@
 //! reed-solomon-simd does not detect intra-shard corruption, so every stored
 //! shard unit is wrapped in a frame whose hash is checked on read and scrub;
 //! corrupted shards are dropped before EC reconstruction.
-//!
-//! Design: docs/design/04-ec-io.md §1.2
 
 use crate::layout::HASH_LEN;
 
@@ -68,8 +66,6 @@ pub fn verify_frame(frame: &[u8]) -> Result<&[u8], FrameError> {
 
 /// Verifies every frame in a shard body framed at `unit` (the final frame may
 /// be shorter) and returns the total verified data length.
-///
-/// Design: docs/design/04-ec-io.md §1.2 (frame boundaries derived from `unit`).
 pub fn verify_shard_body(body: &[u8], unit: usize) -> Result<usize, FrameError> {
     if body.is_empty() {
         return Ok(0);

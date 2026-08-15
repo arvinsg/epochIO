@@ -34,8 +34,6 @@
 //! Snapshot data ([`PdSnapshotData`]) and the current-snapshot record are owned
 //! here; [`super::snapshot::PdSnapshotBuilder`] only generates ids and delegates
 //! to [`build_snapshot`].
-//!
-//! Design: docs/design/01-pd.md §2; docs/design/06-code-layout.md §8
 
 use std::io::Cursor;
 use std::path::Path;

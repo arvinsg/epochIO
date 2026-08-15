@@ -19,8 +19,6 @@
 //!
 //! Label cardinality is bounded (AGENTS §9.3 / 08 §5.1): the only label is `op`
 //! (`put`/`get`/`list`/`delete`/…), never a bucket, key, or node address.
-//!
-//! Design: docs/design/08-web-console.md §5.1
 
 use std::sync::OnceLock;
 

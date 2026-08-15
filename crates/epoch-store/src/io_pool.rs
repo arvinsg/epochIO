@@ -29,8 +29,6 @@
 //! by-extent-id read could serve a cached handle to a superseded file. Reads by
 //! shard are unaffected — they resolve the current binding before touching the
 //! pool.
-//!
-//! Design: docs/design/02-datanode.md §1.3/§1.7; docs/design/07-iteration-plan.md (M3)
 
 use std::collections::HashMap;
 use std::io;

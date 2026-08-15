@@ -28,7 +28,6 @@
 //! the delete queue here, never supplied by the proposer —
 //! INVARIANT(design 03 §5): 旧 slices 必须由 apply 捕获.
 //!
-//! Design: docs/design/03-metanode.md §5/§7/§8; docs/design/06-code-layout.md
 //! §9 (raft/state_machine.rs)
 
 use std::io::Cursor;
@@ -162,7 +161,7 @@ fn delq_seq_key(group: u64) -> [u8; 9] {
 
 /// Counts the pending delq entries in `range` (state-machine construction /
 /// snapshot re-seed of the depth gauge). Paged so a large queue never loads
-/// wholesale. Design: docs/design/08-web-console.md §5.1.
+/// wholesale. Design: draft/design/08-web-console.md §5.1.
 fn count_delq_entries(
     store: &dyn MetaStore,
     range: &PartitionRange,

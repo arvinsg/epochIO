@@ -21,8 +21,6 @@
 //! - **multipart Complete**: `MD5(concat(part MD5s))` with a `-<n>` part-count
 //!   suffix in the S3 string form (03 §5 note; the count rides in the response
 //!   layer, the head stores the 16-byte digest).
-//!
-//! Design: docs/design/03-metanode.md §4.2 (etag field); AWS S3 ETag semantics
 
 use md5::{Digest, Md5};
 

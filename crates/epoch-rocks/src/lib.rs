@@ -21,9 +21,7 @@
 //!
 //! M2 delivers the per-disk index path ([`open_disk_index`] +
 //! [`disk_index_options`]); the state-machine / raft-log profiles and metric
-//! export land with their consumers in M4/M5 (docs/design/07-iteration-plan.md).
-//!
-//! Design: docs/design/06-code-layout.md §5; docs/design/03-metanode.md §8
+//! export land with their consumers in M4/M5 (draft/design/07-iteration-plan.md).
 
 pub mod db;
 pub mod error;

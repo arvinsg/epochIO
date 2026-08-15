@@ -31,8 +31,6 @@
 //! does not fit waits for the next sweep. Scrub keeps a cursor across sweeps
 //! (round-robin over extents) rather than restarting, so a disk larger than one
 //! sweep's budget is still covered completely.
-//!
-//! Design: docs/design/02-datanode.md §1.6/§1.9; docs/design/01-pd.md §6.3
 
 use std::sync::Arc;
 

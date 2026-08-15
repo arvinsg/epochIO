@@ -18,9 +18,6 @@
 //! into idempotent per-shard/per-extent subtasks, dispatches them (with data
 //! affinity), aggregates results, and batches progress back to PD.
 //!
-//! Design: docs/design/02-datanode.md §3; docs/design/01-pd.md §6;
-//! docs/design/06-code-layout.md §11
-//!
 //! M7 (first phase) delivers the coordinator *framework* — the expand → run →
 //! checkpoint loop over an idempotent [`Subtask`] contract, parameterized by a
 //! [`JobExpander`] and a [`ProgressSink`]. Concrete subtask executors (repair /

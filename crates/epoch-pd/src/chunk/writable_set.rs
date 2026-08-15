@@ -26,8 +26,6 @@
 //! This is pure decision logic (no I/O, no clock): the caller supplies a disk
 //! health lookup built from committed disk state and the heartbeat tracker, so
 //! the policy is directly unit-testable.
-//!
-//! Design: docs/design/01-pd.md §4.2 (writable set)
 
 use epoch_proto::DiskId;
 

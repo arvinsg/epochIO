@@ -31,8 +31,6 @@
 //! yields `payload_len` and the frame can be consumed. Multi-byte scalars are
 //! little-endian, matching the on-disk codecs (`epoch-store`); only order-
 //! sensitive index keys use big-endian (`epoch-proto`).
-//!
-//! Design: docs/design/02-datanode.md §5
 
 /// Fixed frame-header length: 50 bytes.
 pub const FRAME_HEADER_LEN: usize = 50;

@@ -23,8 +23,6 @@
 //! Scope (M4): create + read/list. Bucket deletion data flow (DeleteRange +
 //! orphan GC, 99-Q15) lands with the MetaNode data path (M5); only the identity
 //! record exists here.
-//!
-//! Design: docs/design/03-metanode.md §2 (bucket-分区映射); docs/design/99-open-questions.md N5
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

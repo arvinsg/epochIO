@@ -27,8 +27,6 @@
 //! quota plus a tolerance band, and a move only fires when the source/target
 //! gap exceeds twice the tolerance (anti-thrash). Migration targets respect
 //! partition-level anti-affinity: no two replicas of one partition on one node.
-//!
-//! Design: docs/design/01-pd.md §5 (分区分裂/迁移触发)
 
 use std::collections::BTreeMap;
 

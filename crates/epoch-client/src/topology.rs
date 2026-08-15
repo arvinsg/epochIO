@@ -18,8 +18,6 @@
 //! The snapshot is rebuilt wholesale from `ListNodes` on refresh (periodic plus
 //! error-driven); lookups are lock-free reads behind an [`arc_swap::ArcSwap`]
 //! — never a network call on the hot path.
-//!
-//! Design: docs/design/02-datanode.md §2.1
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

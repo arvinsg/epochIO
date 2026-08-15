@@ -27,8 +27,6 @@
 //! Correctness: the queue is persistent and applied atomically with the
 //! metadata change, tombstoning is idempotent, and delivery is at-least-once
 //! — so deletion never leaks (03 §8 正确性).
-//!
-//! Design: docs/design/03-metanode.md §8; §12.2 (DeleteSink 通用化缝)
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

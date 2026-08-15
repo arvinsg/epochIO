@@ -29,8 +29,6 @@
 //! so a split's narrowed range exports exactly the keys it still owns. v1
 //! collects the id set in memory — partitions split before a range outgrows RAM
 //! (03 §2), the same bound the snapshot export relies on.
-//!
-//! Design: docs/design/01-pd.md §6.3; docs/design/99-open-questions.md Q20/Q27
 
 use std::collections::BTreeSet;
 

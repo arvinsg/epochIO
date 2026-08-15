@@ -42,8 +42,6 @@
 //! A crash before step 4 leaves the binding on the intact source (the
 //! destination is an index-authority orphan); a crash after leaves a `Dropped`
 //! source that scrub reclaims (02 §1.9). Either way no committed blob is lost.
-//!
-//! Design: docs/design/02-datanode.md §1.6
 
 use std::collections::BTreeMap;
 use std::io;

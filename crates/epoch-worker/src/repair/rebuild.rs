@@ -30,8 +30,6 @@
 //! reconstruct all data units, then re-`encode` and take the target parity
 //! unit. Either way the resulting unit is bitrot-framed identically to the
 //! original.
-//!
-//! Design: docs/design/04-ec-io.md §1.2/§5
 
 use epoch_ec::layout::{self, HASH_LEN};
 use epoch_ec::{Erasure, frame};

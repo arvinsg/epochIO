@@ -33,8 +33,6 @@
 //! The operand language is associative (merge(a, merge(b, c)) == merge(merge(a,
 //! b), c)): `SetSize`/`SetStatus` are last-writer-wins and `AddDeletedBytes`
 //! is commutative addition — so RocksDB partial merges are safe.
-//!
-//! Design: docs/design/02-datanode.md §1.6/§1.7
 
 use rocksdb::MergeOperands;
 

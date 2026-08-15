@@ -18,8 +18,6 @@
 //! of `stripe_size` bytes; each stripe is EC-encoded into `data + parity` shards
 //! of `unit` bytes; each shard's on-disk body is a sequence of bitrot frames
 //! `[BLAKE3(32B) | unit bytes]`, where the final frame may be shorter.
-//!
-//! Design: docs/design/04-ec-io.md §1.2
 
 /// BLAKE3 digest length prefixed to every bitrot frame.
 pub const HASH_LEN: usize = 32;
@@ -28,7 +26,6 @@ pub const HASH_LEN: usize = 32;
 ///
 /// reed-solomon-simd requires equal, even-length shards; a 64-byte multiple is
 /// even, SIMD-friendly, and documented compatible across all crate versions.
-/// Design: docs/design/04-ec-io.md §1.2; docs/design/99-open-questions.md 已决（M1）.
 pub const SHARD_ALIGN: usize = 64;
 
 /// Per-shard `unit` for a stripe of `stripe_len` bytes over `data_shards` data
@@ -67,7 +64,7 @@ pub fn last_stripe_len(blob_len: usize, stripe_size: usize) -> usize {
 
 /// On-disk physical length of one shard body holding `logical_len` data bytes
 /// framed at `unit`: `frames * HASH_LEN + logical_len` with
-/// `frames = ceil(logical_len / unit)`. Design: docs/design/04-ec-io.md §1.2.
+/// `frames = ceil(logical_len / unit)`. Design: draft/design/04-ec-io.md §1.2.
 #[must_use]
 pub fn shard_physical_len(logical_len: usize, unit: usize) -> usize {
     if unit == 0 || logical_len == 0 {
@@ -95,7 +92,7 @@ pub fn shard_logical_len(blob_len: usize, stripe_size: usize, data_shards: usize
 
 /// On-disk physical bytes for one shard of a blob: one `HASH_LEN` frame prefix
 /// per stripe on top of [`shard_logical_len`] — the preallocation size for a
-/// shard body on disk. Design: docs/design/04-ec-io.md §1.2.
+/// shard body on disk. Design: draft/design/04-ec-io.md §1.2.
 #[must_use]
 pub fn shard_physical_blob_len(blob_len: usize, stripe_size: usize, data_shards: usize) -> usize {
     stripe_count(blob_len, stripe_size) * HASH_LEN

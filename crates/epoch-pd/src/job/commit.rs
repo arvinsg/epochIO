@@ -24,8 +24,6 @@
 //! the repair/migrate subtask executors (the consumers that produce these
 //! commits); this module supplies the authorization predicate they will gate on,
 //! and is exercised directly by unit tests now.
-//!
-//! Design: docs/design/01-pd.md §6.4
 
 use epoch_proto::NodeId;
 

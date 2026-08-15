@@ -22,8 +22,6 @@
 //! touch* (IAM-lite bucket allow/deny, 01 §6) is enforced by `S3Backend::bucket`,
 //! which every bucket-naming operation already calls — so authorization rides the
 //! resolution every handler performs and cannot be skipped at a call site.
-//!
-//! Design: docs/design/01-pd.md §6
 
 use epoch_client::CredentialCache;
 use s3s::auth::{S3Auth, SecretKey};

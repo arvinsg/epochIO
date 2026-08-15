@@ -32,8 +32,6 @@
 //!
 //! Connections to MetaNodes are lazy per address (like [`PdClient`]'s replica
 //! channels), so construction does no I/O.
-//!
-//! Design: docs/design/01-pd.md §5; docs/design/03-metanode.md §5
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

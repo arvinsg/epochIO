@@ -19,8 +19,6 @@
 //! file to build its transport, code mode and placement. Fields are validated
 //! at [`ClusterConfig::parse`]; the typed accessors below assume that
 //! validation succeeded.
-//!
-//! Design: docs/design/06-code-layout.md §12; docs/design/07-iteration-plan.md (M3).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

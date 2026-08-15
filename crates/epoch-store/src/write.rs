@@ -22,8 +22,6 @@
 //!
 //! M2 exposes a whole-body local API; streamed OPEN/END framing arrives with
 //! the data-plane RPC (M3).
-//!
-//! Design: docs/design/02-datanode.md §1.4/§1.7
 
 use epoch_proto::BlobId;
 

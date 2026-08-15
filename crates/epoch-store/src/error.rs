@@ -18,8 +18,6 @@
 //! write-path rejection reasons (sealed / full / not writable) so the local
 //! blob API and the future RPC service share one error surface. Mapping to the
 //! cross-component `epoch_proto::EpochError` happens at the RPC boundary (M3).
-//!
-//! Design: docs/design/02-datanode.md §1.4; docs/design/06-code-layout.md §6
 
 use std::io;
 

@@ -21,8 +21,8 @@
 //!
 //! The single blueprint TOML is written once and read by both the spawned nodes
 //! (each with `--node <id>`) and this driver, so placement and code mode cannot
-//! drift between them. Design: docs/design/07-iteration-plan.md (M3);
-//! docs/design/04-ec-io.md §3/§4.
+//! drift between them. Design: draft/design/07-iteration-plan.md (M3);
+//! draft/design/04-ec-io.md §3/§4.
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};

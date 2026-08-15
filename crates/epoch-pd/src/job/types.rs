@@ -25,8 +25,6 @@
 //! reassignment decision (which does need the clock) runs in a leader ticker
 //! and proposes an explicit `AssignJob` with the computed expiry, mirroring the
 //! writer-liveness pattern.
-//!
-//! Design: docs/design/01-pd.md §6; docs/design/06-code-layout.md §8
 
 use epoch_proto::{DiskId, NodeId};
 use serde::{Deserialize, Serialize};

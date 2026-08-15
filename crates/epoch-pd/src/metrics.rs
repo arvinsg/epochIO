@@ -21,8 +21,6 @@
 //! entry kind, and an entry-kind label would balloon cardinality for no
 //! operational gain (AGENTS §9.3 / 08 §5.1).
 //!
-//! Design: docs/design/08-web-console.md §5.1
-//!
 //! [`Journal::propose`]: crate::journal::Journal::propose
 
 use std::sync::OnceLock;

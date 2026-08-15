@@ -24,8 +24,6 @@
 //!   index/        per-disk RocksDB (blob index + extent metadata)
 //!   .trash/       extents awaiting physical deletion after the protection window
 //! ```
-//!
-//! Design: docs/design/02-datanode.md §1.1
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};

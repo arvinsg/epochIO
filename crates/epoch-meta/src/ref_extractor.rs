@@ -21,7 +21,6 @@
 //! reference model (03 §12.2: epochIO extracts `Slice{chunk_id, blob_ids}`,
 //! curvine would extract block ids).
 //!
-//! Design: docs/design/03-metanode.md §12.2 (RefExtractor trait), §4.2 (Slice),
 //! §8 (PendingDelete)
 
 use epoch_proto::{BlobId, ChunkId};

@@ -25,8 +25,6 @@
 //! staged deterministic identity) → commit propose. A failed creation is
 //! rebumped (epoch jump) and retried on the next sweep; staging plans left by a
 //! leader crash are resumed the same way, so no manual cleanup is ever needed.
-//!
-//! Design: docs/design/01-pd.md §4.1; docs/design/07-iteration-plan.md (M4)
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

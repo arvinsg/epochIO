@@ -24,8 +24,6 @@
 //! data-plane node address comes from the committed node table. A missing
 //! leader report (just after a failover) means "retry next sweep" — the same
 //! best-effort contract as `CreateRaftGroup` push.
-//!
-//! Design: docs/design/01-pd.md §5; docs/design/03-metanode.md §2
 
 use std::sync::Arc;
 use std::time::Duration;

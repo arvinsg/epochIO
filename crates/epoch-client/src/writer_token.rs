@@ -33,8 +33,6 @@
 //! and the clock live with the gateway (a later phase); this type stays
 //! deterministic by taking `now_millis` explicitly.
 //!
-//! Design: docs/design/01-pd.md §4.3
-//!
 //! [`record_heartbeat_ok`]: WriterSession::record_heartbeat_ok
 
 use std::collections::BTreeSet;

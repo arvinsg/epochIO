@@ -20,8 +20,6 @@
 //! A blob write is a stream: [`ShardTransport::open_write`] → repeated
 //! [`WriteStream::send_frame`] → [`WriteStream::finish`] (which resolves once
 //! the shard is fsynced and committed, 02 §1.7 / Q16).
-//!
-//! Design: docs/design/02-datanode.md §2/§5; docs/design/04-ec-io.md §3.1
 
 use std::sync::Arc;
 

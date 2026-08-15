@@ -32,8 +32,6 @@
 //! is atomic with the metadata change. Apply is serial per partition, so the
 //! capture is race-free by construction; a gateway-supplied old value would
 //! leak under concurrent overwrites.
-//!
-//! Design: docs/design/03-metanode.md §4.2/§5
 
 use epoch_proto::BucketId;
 use serde::{Deserialize, Serialize};

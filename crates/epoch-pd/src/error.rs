@@ -18,8 +18,6 @@
 //! directly, as required by the raft engine; [`PdError`] covers the surrounding
 //! service layer — opening the raft stores, bootstrapping the raft node, and
 //! proposing through the journal.
-//!
-//! Design: docs/design/01-pd.md §2
 
 use openraft::StorageError;
 use openraft::error::{ClientWriteError, RaftError};

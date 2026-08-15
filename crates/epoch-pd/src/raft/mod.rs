@@ -26,8 +26,6 @@
 //! to registered DataNodes / MetaNodes. PD replicas bootstrap the cluster before
 //! any node registration, so they carry their own configured ids and addresses
 //! ([`openraft::BasicNode`]).
-//!
-//! Design: docs/design/01-pd.md §2; docs/design/06-code-layout.md §8
 
 // openraft's `StorageError` is intentionally large (its own crate allows this
 // lint for the same reason); every storage-trait method here must return it, so

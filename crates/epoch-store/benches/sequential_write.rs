@@ -23,8 +23,6 @@
 //!     (same durability granularity → isolates framing/index overhead);
 //!   - `raw_stream_single_fsync`  — one sequential pass, single trailing fsync
 //!     (the raw sequential-bandwidth ceiling = "裸速").
-//!
-//! Design: docs/design/07-iteration-plan.md M2
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;

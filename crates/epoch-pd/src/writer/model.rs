@@ -22,8 +22,6 @@
 //! [`Dead`](WriterStatus::Dead), and a Dead token **never revives** — the
 //! gateway must register a fresh token. This one-way lifecycle is what makes a
 //! Dead token's blobs safe to garbage-collect (01 §6.3 GC watermark).
-//!
-//! Design: docs/design/01-pd.md §4.3 (writer_token issuance / session)
 
 use epoch_proto::{NodeId, WriterToken};
 use serde::{Deserialize, Serialize};

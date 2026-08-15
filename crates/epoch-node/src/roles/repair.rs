@@ -33,8 +33,6 @@
 //! data-affinity placement is a follow-up) and are idempotent end to end, so a
 //! crash + re-dispatch simply re-runs from surviving state (already-rebound
 //! slots report done).
-//!
-//! Design: docs/design/01-pd.md §6.1/§6.3; docs/design/02-datanode.md §3.1/§3.2
 
 use std::sync::Arc;
 use std::time::Duration;

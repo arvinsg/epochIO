@@ -21,8 +21,6 @@
 //! Scope (M6): root + static sub-account keys with an optional bucket
 //! allow-list (IAM-lite). Policy engine / STS / bucket policy are out of scope
 //! (01 §6 范围).
-//!
-//! Design: docs/design/01-pd.md §6 (Bucket 表与认证 N5)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError`; boxing it is not an option inside the state machine. Scope

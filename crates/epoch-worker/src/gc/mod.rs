@@ -29,8 +29,6 @@
 //! over a [`GcBackend`] seam (list local blobs → tombstone), mirroring the
 //! repair subtask's injected-backend shape. Reclaim is idempotent (tombstone is
 //! idempotent; the physical space returns via the existing compaction path).
-//!
-//! Design: docs/design/01-pd.md §6.3; docs/design/99-open-questions.md Q20/Q27
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;

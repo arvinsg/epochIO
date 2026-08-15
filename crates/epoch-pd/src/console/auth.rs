@@ -22,8 +22,6 @@
 //! it compares the presented secret against the stored one (constant-time) and
 //! reads the credential's [`ConsoleRole`]. SigV4 exists to avoid sending the
 //! secret each request; a login form submits it once over TLS.
-//!
-//! Design: docs/design/08-web-console.md §4.1, §8
 
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};

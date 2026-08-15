@@ -25,8 +25,6 @@
 //! accumulated bytes and the number of concurrently open streams per
 //! connection, and reaps streams idle past a timeout — so a peer that vanishes
 //! mid-stream can never strand unbounded memory on a long-lived connection.
-//!
-//! Design: docs/design/02-datanode.md §5; docs/design/04-ec-io.md §3.1
 
 use std::collections::HashMap;
 use std::future::Future;

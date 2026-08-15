@@ -20,8 +20,6 @@
 //! cheap to clone (all fields are `Arc`), so the state machine and the read path
 //! observe the same in-memory indexes. It is also the aggregation point for
 //! cross-manager invariants (e.g. a disk registration validates its owning node).
-//!
-//! Design: docs/design/01-pd.md §2
 
 // `apply_command` / `open` return openraft's intentionally-large `StorageError`
 // (see the `raft` module); they feed the raft state machine, so boxing it is not

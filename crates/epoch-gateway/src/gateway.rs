@@ -21,8 +21,6 @@
 //! session come from `epoch-client`; the transport is an
 //! `Arc<dyn ShardTransport>` (a [`epoch_client::MuxTransport`] when co-located
 //! with a data node, Q21).
-//!
-//! Design: docs/design/04-ec-io.md §3; docs/design/02-datanode.md §2.1/§2.3
 
 use std::sync::Arc;
 

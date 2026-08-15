@@ -24,8 +24,6 @@
 //! listener uses — a config-based port would not be discoverable from raft
 //! membership). Static assets are served by any replica so the login page
 //! always loads.
-//!
-//! Design: docs/design/08-web-console.md §1, §4, §4.1, §7
 
 pub mod api;
 pub mod assets;

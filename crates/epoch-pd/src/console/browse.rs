@@ -28,8 +28,6 @@
 //! no secret key — that credential mechanism is undecided (99: presigned URL
 //! pending M7 verification), so the download button stays disabled until it
 //! lands. This trait covers only the metadata reads (list + head).
-//!
-//! Design: docs/design/08-web-console.md §4, §7
 
 use async_trait::async_trait;
 

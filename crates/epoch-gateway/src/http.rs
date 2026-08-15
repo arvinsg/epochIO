@@ -34,8 +34,6 @@
 //! only the blobs the window touches are fetched, and the reply is 206 with a
 //! matching `Content-Range` — answering a range request with the whole body under
 //! 200 silently corrupts every parallel downloader.
-//!
-//! Design: docs/design/00-overview.md §5; docs/design/03-metanode.md §6.4
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

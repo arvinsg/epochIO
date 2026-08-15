@@ -22,8 +22,6 @@
 //! Values are opaque bytes; interpretation (codemode registry, watermarks,
 //! feature flags) belongs to the readers. Keys are plain strings, ordered for
 //! prefix scans.
-//!
-//! Design: docs/design/01-pd.md §1 (配置中心); §3 (EC 配置)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

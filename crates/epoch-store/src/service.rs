@@ -43,8 +43,6 @@
 //! Only writable, currently-bound extents get a writer thread; others (sealed,
 //! dropped, or unbound compaction orphans) stay closed and are read on demand or
 //! reclaimed by maintenance.
-//!
-//! Design: docs/design/02-datanode.md §1.4/§1.5/§1.7; docs/design/07-iteration-plan.md (M3)
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;

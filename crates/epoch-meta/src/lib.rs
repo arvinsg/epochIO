@@ -19,9 +19,7 @@
 //! TiKV-style range partitions over openraft multi-raft, and a persistent
 //! delete queue that directly drives tombstoning.
 //!
-//! Design: docs/design/03-metanode.md; docs/design/06-code-layout.md §9
-//!
-//! M5a delivered (docs/design/07-iteration-plan.md §M5a 实际交付): the storage
+//! M5a delivered (draft/design/07-iteration-plan.md §M5a 实际交付): the storage
 //! engines ([`store`], 03 §7), the multi-raft runtime with the batched
 //! transport ([`raft`] + [`partition`] coordinates, 03 §8), the flat
 //! namespace with apply-time old-slices capture ([`ns_flat`], 03 §5), the

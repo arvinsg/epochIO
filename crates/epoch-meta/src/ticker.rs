@@ -21,8 +21,6 @@
 //! input PD's route table (leader memory) and CreateRaftGroup reconciliation
 //! consume (01 §5). Reports are best-effort: a failed round retries at the
 //! next tick.
-//!
-//! Design: docs/design/01-pd.md §5 (PartitionHeartbeat)
 
 use std::sync::Arc;
 use std::time::Duration;

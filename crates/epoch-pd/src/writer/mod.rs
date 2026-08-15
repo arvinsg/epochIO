@@ -19,8 +19,6 @@
 //! gateway heartbeat staleness. A token is the high 32 bits of every `blob_id`
 //! (00 §4), issued from a monotonic counter, never reused, and one-way
 //! `Live → Dead` (01 §4.3).
-//!
-//! Design: docs/design/01-pd.md §4.3 (writer_token issuance / session)
 
 pub mod liveness;
 pub mod manager;

@@ -24,7 +24,7 @@
 //! PUTs to a chunk reuse one extent per shard rather than orphaning the last.
 //!
 //! The returned [`ObjectLayout`] is the M3 stand-in for the MetaNode object
-//! record a GET later replays. Design: docs/design/04-ec-io.md §3.
+//! record a GET later replays. Design: draft/design/04-ec-io.md §3.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

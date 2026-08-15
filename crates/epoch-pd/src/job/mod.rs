@@ -21,8 +21,6 @@
 //! Determinism (08): `apply` reads no clock. Lease expiry and coordinator choice
 //! arrive in the command (computed before proposal, §6.1). Reassignment is a
 //! fresh `AssignJob` proposed by the leader ticker once a lease lapses.
-//!
-//! Design: docs/design/01-pd.md §6
 
 #![allow(clippy::result_large_err)]
 

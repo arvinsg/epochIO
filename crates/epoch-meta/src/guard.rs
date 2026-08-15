@@ -33,8 +33,6 @@
 //! The node-level capacity watermark of 03 §4.3 is configuration-plumbed and
 //! lands with the node budget config (registered in 99); the MemEngine
 //! variant (stricter, 03 §7) is M5b.
-//!
-//! Design: docs/design/03-metanode.md §4.3
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

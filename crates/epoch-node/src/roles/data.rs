@@ -26,8 +26,7 @@
 //!   left untouched, since re-creating it would orphan the existing extent and
 //!   lose its blobs.
 //!
-//! Design: docs/design/02-datanode.md §2; docs/design/06-code-layout.md §12;
-//! docs/design/07-iteration-plan.md (M4).
+//! draft/design/07-iteration-plan.md (M4).
 
 use std::future::Future;
 use std::sync::Arc;

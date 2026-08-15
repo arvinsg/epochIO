@@ -17,8 +17,6 @@
 //! One tuned `Options` set per usage pattern (06 §5). Only the per-disk index
 //! profile is exercised by M2; the `StateMachine` and `RaftLog` profiles land
 //! with their consumers in M4/M5 (no speculative code, AGENTS §12b).
-//!
-//! Design: docs/design/06-code-layout.md §5; docs/design/02-datanode.md §1.3
 
 use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, MergeOperands, Options};
 

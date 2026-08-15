@@ -20,8 +20,6 @@
 //! Label cardinality is bounded (AGENTS §9.3 / 08 §5.1): the only labels are
 //! `class` (foreground/background/repair) and `op` (read/write) — never a
 //! bucket, key, path, or node address.
-//!
-//! Design: docs/design/08-web-console.md §5.1; docs/design/02-datanode.md §1.7
 
 use std::sync::OnceLock;
 

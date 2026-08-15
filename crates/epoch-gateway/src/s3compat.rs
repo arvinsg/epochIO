@@ -33,8 +33,6 @@
 //! [`ObjectService`](crate::object::ObjectService), which drives the resolvers
 //! here. A hier file body is therefore inline or EC on exactly the flat rule
 //! (03 §6.4), not inline-only.
-//!
-//! Design: docs/design/03-metanode.md §6.4/§6.5
 
 use epoch_client::{ClientError, MetaClient};
 use epoch_proto::consts::ROOT_INO;
@@ -132,9 +130,9 @@ async fn mkdir(
         HierEntryKind::HierEntryFile => return Err(GatewayError::DirFileConflict),
         HierEntryKind::HierEntryUnspecified => {}
     }
-    // Step 1: mint the child sentinel. Step 2: link it (commit point). If the
-    // link is rejected as a conflict, surface it; a concurrent link of the same
-    // name is idempotent server-side.
+    // The link is the commit point, not the sentinel mint that precedes it. A
+    // link rejected as a conflict is surfaced; a concurrent link of the same name
+    // is idempotent server-side.
     let child_ino = meta
         .hier_mkdir_sentinel(bucket, parent_ino, name, ts_millis)
         .await

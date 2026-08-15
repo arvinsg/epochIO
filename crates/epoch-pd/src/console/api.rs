@@ -21,8 +21,6 @@
 //! The concrete endpoints land incrementally: `overview` + `live` (this file,
 //! W3); nodes / jobs (W4); keys / usage / objects (W5). Rates and trends never
 //! live here — they are `/metrics` + Grafana (08 §2/§5).
-//!
-//! Design: docs/design/08-web-console.md §5
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;

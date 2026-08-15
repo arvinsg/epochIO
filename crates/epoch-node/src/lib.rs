@@ -19,8 +19,6 @@
 //! role (raft peer transport + control plane, leader tickers), and the
 //! `meta` role (PD registration, multi-raft recovery, MetaNode gRPC + batched
 //! raft transport, partition heartbeat + delete/upload sweeps).
-//!
-//! Design: docs/design/06-code-layout.md §12; docs/design/00-overview.md §3.
 
 pub mod config;
 pub mod error;

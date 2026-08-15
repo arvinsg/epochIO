@@ -26,8 +26,6 @@
 //! trust the status code (every parallel-download tool: `aws s3 cp`, s3fs,
 //! columnar readers seeking a footer) slice the response as if it were the window
 //! they asked for and silently assemble corrupt data.
-//!
-//! Design: docs/design/04-ec-io.md §4
 
 use crate::code::{BlobDesc, ObjectLayout};
 

@@ -21,8 +21,6 @@
 //! `DeleteBlob` RPC **fanned out to all shards** (02 §1: a blob is striped
 //! across the chunk's shards under one id, so it is tombstoned everywhere;
 //! per-shard failures are retried and re-tombstoned idempotently, 03 §8).
-//!
-//! Design: docs/design/03-metanode.md §8/§12.2; docs/design/02-datanode.md §1.6
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;

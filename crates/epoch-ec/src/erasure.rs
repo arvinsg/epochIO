@@ -17,8 +17,6 @@
 //! Fixed `(data, parity)` Reed–Solomon coding over equal-length, even-sized
 //! shards. No I/O. Integrity is not checked here — corrupt shards must be
 //! dropped (see [`crate::frame`]) before [`Erasure::reconstruct`].
-//!
-//! Design: docs/design/04-ec-io.md §2/§3
 
 /// Errors from erasure configuration or coding.
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +75,7 @@ impl Erasure {
     /// Creates a coder for `data` original and `parity` recovery shards.
     ///
     /// Both counts must be in `1..=32768` (Replica-3 is the `data=1, parity=2`
-    /// case). Design: docs/design/04-ec-io.md §2.
+    /// case). Design: draft/design/04-ec-io.md §2.
     pub fn new(data: usize, parity: usize) -> Result<Self, EcError> {
         if data == 0 || parity == 0 || data > MAX_SHARDS || parity > MAX_SHARDS {
             return Err(EcError::InvalidCodeMode { data, parity });

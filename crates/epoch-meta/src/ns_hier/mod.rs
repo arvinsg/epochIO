@@ -44,8 +44,6 @@
 //! two-step of 03 §6.2, but each step is its own single-partition op (its own
 //! propose) — this module implements the atomic steps; the two-step
 //! orchestration across partitions is a service-layer concern.
-//!
-//! Design: docs/design/03-metanode.md §6
 
 use epoch_proto::BucketId;
 use serde::{Deserialize, Serialize};

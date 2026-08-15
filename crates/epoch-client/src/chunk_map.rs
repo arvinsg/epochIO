@@ -16,8 +16,6 @@
 //! data-plane endpoints once, then serves reads from memory; entries are
 //! invalidated on epoch bumps and shard errors (`ShardNotFound` / seal-driven
 //! placement changes), forcing a fresh fetch on the next read.
-//!
-//! Design: docs/design/02-datanode.md §2.1; docs/design/01-pd.md §4.4
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

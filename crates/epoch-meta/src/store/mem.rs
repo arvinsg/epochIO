@@ -26,8 +26,6 @@
 //! **experimental** (03 §7): default off, opt-in per bucket, promoted after
 //! shadow-traffic validation (M9). The PD RAM-watermark guard is registered
 //! there too; this type is the engine only.
-//!
-//! Design: docs/design/03-metanode.md §7
 
 use std::collections::BTreeMap;
 use std::sync::{PoisonError, RwLock};

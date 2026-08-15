@@ -30,8 +30,6 @@
 //! INVARIANT(design 01 §3): `shards.len() == code_mode.shards_total()`, slot `i`
 //! holds shard index `i`, and `shard_prefix` is the epoch-zeroed stable identity
 //! (`chunk_id<<32 | index<<24`).
-//!
-//! Design: docs/design/01-pd.md §3 (Chunk model); §4.1 (creation); §4.4 (epoch)
 
 use epoch_proto::{ChunkId, CodeMode, DiskId, ExtentId, NodeId, ShardId};
 use serde::{Deserialize, Serialize};

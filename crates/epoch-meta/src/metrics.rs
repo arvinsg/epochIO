@@ -19,8 +19,6 @@
 //!
 //! Label cardinality is bounded (AGENTS §9.3 / 08 §5.1): `ns` is `flat`/`hier`;
 //! `partition` is the partition id (cluster-scale cardinality, 08 §5.1 注).
-//!
-//! Design: docs/design/08-web-console.md §5.1; docs/design/03-metanode.md §8
 
 use std::sync::OnceLock;
 

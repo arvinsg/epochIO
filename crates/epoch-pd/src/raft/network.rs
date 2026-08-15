@@ -25,8 +25,6 @@
 //!
 //! A single-node group never sends peer RPCs, so the network is simply never
 //! invoked there.
-//!
-//! Design: docs/design/01-pd.md §2; docs/design/06-code-layout.md §8
 
 use epoch_proto::grpc::raft::RaftEnvelope;
 use epoch_proto::grpc::raft::pd_raft_peer_client::PdRaftPeerClient;

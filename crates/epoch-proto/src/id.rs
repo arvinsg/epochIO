@@ -14,15 +14,13 @@
 
 //! ID types — the workspace's identity vocabulary and their bit layouts.
 //!
-//! Layouts (docs/design/00-overview.md §4):
+//! Layouts (draft/design/00-overview.md §4):
 //! ```text
 //! ChunkId  u32
 //! BlobId   u64 = writer_token(32) | seq(32)
 //! ShardId  u64 = chunk_id(32) | index(8) | epoch(24)
 //! ExtentId [16]byte = shard_id(8B BE) | create_ts(8B BE)
 //! ```
-//!
-//! Design: docs/design/00-overview.md §4; docs/design/06-code-layout.md §1
 
 /// Bits reserved for the shard index within a [`ShardId`].
 pub const SHARD_INDEX_BITS: u32 = 8;
@@ -175,7 +173,7 @@ impl From<u64> for BucketId {
 ///
 /// Constructed locally by the gateway with no allocation point. Globally unique
 /// by construction: tokens are never reused and `seq` is monotonic within a
-/// token. Design: docs/design/00-overview.md §4.
+/// token. Design: draft/design/00-overview.md §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -212,7 +210,6 @@ impl BlobId {
 ///
 /// `epoch` increments when a shard is re-bound to a new extent by repair or
 /// migration; it never enters object metadata (clients hold epoch-free Slices).
-/// Design: docs/design/00-overview.md §4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
@@ -269,7 +266,7 @@ impl ShardId {
         (self.0 & MAX_SHARD_EPOCH as u64) as u32
     }
     /// The epoch-zeroed stable identity `chunk_id<<32 | index<<24`, used as the
-    /// per-disk `s{shard_prefix}` index key. Design: docs/design/01-pd.md §3.
+    /// per-disk `s{shard_prefix}` index key. Design: draft/design/01-pd.md §3.
     pub const fn shard_prefix(self) -> u64 {
         self.0 & !(MAX_SHARD_EPOCH as u64)
     }
@@ -283,7 +280,6 @@ impl ShardId {
 ///
 /// Big-endian layout makes extents sort by shard first, then by creation time.
 /// Used as the `e{extent_id}` index key and the extent file name.
-/// Design: docs/design/00-overview.md §4; docs/design/02-datanode.md §1.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]

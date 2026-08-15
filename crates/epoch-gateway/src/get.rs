@@ -20,7 +20,7 @@
 //! M3 reads all `data + parity` shards per blob and reconstructs from whatever
 //! returns; the topology-ordered "seed `data`, backfill from parity" reader that
 //! avoids parity read-amplification is a later optimization, not a correctness
-//! requirement. Design: docs/design/04-ec-io.md §4.
+//! requirement. Design: draft/design/04-ec-io.md §4.
 
 use std::sync::Arc;
 

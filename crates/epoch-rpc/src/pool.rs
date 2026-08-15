@@ -20,8 +20,6 @@
 //! shard and reconstructs around). Per-`IoClass` connection pools are deferred
 //! until repair/background data-plane traffic exists (M4+); M3 has foreground
 //! traffic only.
-//!
-//! Design: docs/design/02-datanode.md §5; docs/design/04-ec-io.md §3.3
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

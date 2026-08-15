@@ -19,7 +19,6 @@
 //! the same kind on a node, partitions staying logically isolated by their
 //! routing-key ranges (no partition id enters this layer).
 //!
-//! Design: docs/design/03-metanode.md §7 (MetaStore trait 双实现), §2 (同进程
 //! 共享存储实例承载全部分区)
 
 pub mod keys;
@@ -32,7 +31,7 @@ pub use rocks::RocksEngine;
 
 /// One metadata mutation in a neutral, engine-independent form.
 ///
-/// Design: docs/design/03-metanode.md §7 — "StoreOp = (Cf, Key, Op) 中立类型，
+/// Design: draft/design/03-metanode.md §7 — "StoreOp = (Cf, Key, Op) 中立类型，
 /// 非 RocksDB WriteBatch", so the MemEngine applies the same batches and the two
 /// engines can be equivalence-tested against each other.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -119,7 +118,7 @@ impl From<rocksdb::Error> for MetaStoreError {
 
 /// The partition-level storage interface raft state machines apply through.
 ///
-/// Design: docs/design/03-metanode.md §7. Implementations must make
+/// Design: draft/design/03-metanode.md §7. Implementations must make
 /// [`apply`](MetaStore::apply) atomic and idempotent; reads are always served
 /// from the local replica (linearity comes from the raft layer's ReadIndex,
 /// 03 §5, not from this trait).

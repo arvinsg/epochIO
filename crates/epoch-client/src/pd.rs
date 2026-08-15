@@ -26,8 +26,6 @@
 //! The read projections currently return the generated `pd::ChunkView`; the
 //! gateway-facing domain view and its cache land with the read/write path in a
 //! later phase.
-//!
-//! Design: docs/design/01-pd.md §7
 
 use std::future::Future;
 use std::sync::Arc;

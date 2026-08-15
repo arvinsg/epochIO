@@ -20,8 +20,6 @@
 //! a restart with persisted membership is a no-op); the others join as the
 //! replicated entry commits. Tickers re-check leadership every tick, so no
 //! start/stop lifecycle plumbing is needed on failover.
-//!
-//! Design: docs/design/01-pd.md; docs/design/07-iteration-plan.md (M4)
 
 use std::future::Future;
 use std::sync::Arc;

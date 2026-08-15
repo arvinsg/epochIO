@@ -24,8 +24,6 @@
 //! This amortizes the two durability barriers across concurrent writers to the
 //! same shard while preserving the per-blob append→fsync→commit ordering the
 //! persistence contract requires (02 §1.7).
-//!
-//! Design: docs/design/02-datanode.md §1.4/§1.7; docs/design/07-iteration-plan.md (M3)
 
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -20,8 +20,6 @@
 //! publishes to gateways so they can encode without a second lookup. The config
 //! registry that mints ids lands with the PD config manager (a later
 //! milestone); until then a fixed mode is injected.
-//!
-//! Design: docs/design/01-pd.md §3 (Chunk model); docs/design/04-ec-io.md §1.2/§2
 
 /// Stable identity of a configured erasure-code mode (the PD registry key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

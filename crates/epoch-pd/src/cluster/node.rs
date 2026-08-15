@@ -27,8 +27,6 @@
 //! start rebuilds the cache from disk, discarding the un-flushed mutations, so
 //! cache and disk reconverge. Node ids are handed out from a persistent counter
 //! (deterministic across replicas, AGENTS §8), never reused.
-//!
-//! Design: docs/design/01-pd.md §1 (node membership); §3 (Node model)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see `raft` module): they run inside the raft state machine, so

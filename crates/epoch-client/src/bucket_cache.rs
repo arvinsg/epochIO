@@ -22,8 +22,6 @@
 //! M6 (no rename/delete on the hot path), so a present entry never goes stale
 //! in a way that matters for routing — only newly-created buckets need a
 //! refill, which a miss triggers.
-//!
-//! Design: docs/design/01-pd.md §6
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

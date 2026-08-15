@@ -26,8 +26,6 @@
 //! Partition **leader** reports arrive via `PartitionHeartbeat` and live only
 //! in leader memory (Q18): they never enter raft, are rebuilt within seconds
 //! after a PD failover, and are absent from snapshots.
-//!
-//! Design: docs/design/01-pd.md §3 (MetaPartition) / §5; docs/design/03-metanode.md §2
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

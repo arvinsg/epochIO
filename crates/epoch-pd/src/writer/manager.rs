@@ -25,8 +25,6 @@
 //!
 //! INVARIANT(design 01 §4.3): a token's status is one-way `Live → Dead`; a Dead
 //! token never revives, which is what lets its blobs be garbage-collected.
-//!
-//! Design: docs/design/01-pd.md §4.3 (writer_token issuance / session)
 
 // The apply / recovery methods return openraft's intentionally-large
 // `StorageError` (see the `raft` module): they run inside the raft state machine,

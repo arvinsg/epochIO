@@ -29,9 +29,6 @@
 //! The subtask is written against a [`RepairBackend`] seam so the orchestration
 //! is unit-testable without a live cluster; the production backend (gRPC to PD +
 //! data-plane RPC to DataNodes) is assembled in the node's coordinator wiring.
-//!
-//! Design: docs/design/01-pd.md §6.3/§6.4; docs/design/02-datanode.md §3.2;
-//! docs/design/04-ec-io.md §5
 
 use std::sync::Arc;
 

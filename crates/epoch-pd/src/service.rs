@@ -31,8 +31,6 @@
 //! in a later phase; here a single-node group is always its own leader once it
 //! has initialized.
 //!
-//! Design: docs/design/01-pd.md §7
-//!
 //! [`Raft::ensure_linearizable`]: openraft::Raft::ensure_linearizable
 
 use std::sync::Arc;

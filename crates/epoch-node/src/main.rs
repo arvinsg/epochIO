@@ -15,8 +15,6 @@
 //! epochio: the single service binary — `epochio --role pd|meta|data`, plus
 //! `epochio dev` to bring up a local cluster for development (M4).
 //!
-//! Design: docs/design/06-code-layout.md §12; docs/design/00-overview.md §3
-//!
 //! `epochio --role data --config <file> --node <id>` assembles the storage
 //! engine and serves the data plane until Ctrl-C; `--role pd --node <id>` runs
 //! one PD replica (raft peer + control plane). `epochio dev --config <file>`

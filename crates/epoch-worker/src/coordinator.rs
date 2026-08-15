@@ -25,8 +25,6 @@
 //! lease renewal to PD). Concrete expanders (repair / migrate / inspect / gc)
 //! and the gRPC `ProgressSink` land with their data-plane wiring in later M7
 //! sub-phases; the framework is exercised now with in-memory test doubles.
-//!
-//! Design: docs/design/02-datanode.md §3.1; docs/design/01-pd.md §6
 
 use std::sync::Arc;
 

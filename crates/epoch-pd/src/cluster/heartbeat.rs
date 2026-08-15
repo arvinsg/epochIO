@@ -23,8 +23,6 @@
 //! from the committed log. INVARIANT(design 01 §2 / AGENTS §8): the wall clock
 //! is read only on the leader to decide *when* to propose, and never enters a
 //! replicated apply.
-//!
-//! Design: docs/design/01-pd.md §2 (heartbeat / liveness)
 
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};

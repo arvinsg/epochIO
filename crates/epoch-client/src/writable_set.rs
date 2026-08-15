@@ -17,8 +17,6 @@
 //! / `DiskBroken` evict immediately, no lease) and topology-affined picking —
 //! chunks hosting more shards on the local node/rack are preferred (Q21:
 //! locality first), then weighted-random to spread load.
-//!
-//! Design: docs/design/02-datanode.md §2.1; docs/design/01-pd.md §4.2
 
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};

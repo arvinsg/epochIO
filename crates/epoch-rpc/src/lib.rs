@@ -18,8 +18,6 @@
 //! in-process [`LocalTransport`] so a gateway can reach a co-located store
 //! without the network stack. Zero-copy on the hot path: bodies flow as
 //! [`bytes::Bytes`] and are written vectored with their frame header.
-//!
-//! Design: docs/design/02-datanode.md §5; docs/design/06-code-layout.md §4
 
 pub mod codec;
 pub mod frame;

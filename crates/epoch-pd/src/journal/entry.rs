@@ -23,8 +23,6 @@
 //! / meta_partition / job / kv, design 01 §2) as those managers land; the node
 //! (cluster membership) variants arrive first alongside [`PdEntry::Noop`], which
 //! exercises and health-checks the propose→apply path.
-//!
-//! Design: docs/design/01-pd.md §2
 
 use epoch_proto::{BucketId, ChunkId, DiskId, NodeId, WriterToken};
 use serde::{Deserialize, Serialize};

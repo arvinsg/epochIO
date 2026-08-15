@@ -18,8 +18,6 @@
 //! stripe's shards in memory; `frame` wraps each stored shard unit in a BLAKE3
 //! bitrot frame; `layout` holds the striping math; `buffer` provides contiguous
 //! per-stripe shard storage. I/O is injected by callers in higher layers.
-//!
-//! Design: docs/design/04-ec-io.md; docs/design/06-code-layout.md §3
 
 pub mod buffer;
 pub mod erasure;

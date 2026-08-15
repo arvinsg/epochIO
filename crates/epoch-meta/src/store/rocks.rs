@@ -21,7 +21,6 @@
 //! applied record written in the same batch caps how far the log replays, and
 //! re-apply is idempotent (03 §7).
 //!
-//! Design: docs/design/03-metanode.md §7/§8; docs/design/06-code-layout.md §5
 //! (epoch-rocks StateMachine profile)
 
 use std::path::Path;

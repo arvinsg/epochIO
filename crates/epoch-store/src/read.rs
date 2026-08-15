@@ -20,8 +20,6 @@
 //! [`ExtentFile::read_record`] (header CRC, footer, body CRC32C), and the
 //! record's self-described `blob_id` is cross-checked against the request to
 //! catch any index/file desync.
-//!
-//! Design: docs/design/02-datanode.md §1.3/§1.6
 
 use epoch_proto::BlobId;
 

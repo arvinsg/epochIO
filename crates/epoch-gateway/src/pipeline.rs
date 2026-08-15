@@ -22,8 +22,6 @@
 //! (`[BLAKE3(32) | unit]`, the final unit possibly shorter); frame boundaries
 //! are derived from the stripe `unit`, never stored (04 §1.2). This module is
 //! pure computation — no transport, no I/O.
-//!
-//! Design: docs/design/04-ec-io.md §1.2/§3/§4.
 
 use epoch_ec::Erasure;
 use epoch_ec::frame;

@@ -24,8 +24,6 @@
 //! INVARIANT(design 01 §4.3 / AGENTS §8): staleness is read only on the leader
 //! to decide *when* to propose retirement; the wall clock never enters a
 //! replicated apply.
-//!
-//! Design: docs/design/01-pd.md §4.3
 
 use epoch_proto::{NodeId, WriterToken};
 

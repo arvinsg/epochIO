@@ -19,8 +19,6 @@
 //! any other error. The *stateful* disk-broken decision ("trip once per disk,
 //! process fatal at >=3 disks") lives in the disk-state owner (epoch-store),
 //! not here; this crate only classifies.
-//!
-//! Design: docs/design/02-datanode.md §1.8; docs/design/06-code-layout.md §5
 
 use rocksdb::{Error as RawError, ErrorKind};
 

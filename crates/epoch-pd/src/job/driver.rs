@@ -25,8 +25,6 @@
 //!
 //! Coordinator *selection* is a pure function here ([`pick_coordinator`]); the
 //! richer data-affinity choice (01 §6.3) lands with the subtask executors.
-//!
-//! Design: docs/design/01-pd.md §6
 
 use std::sync::Arc;
 use std::time::Duration;

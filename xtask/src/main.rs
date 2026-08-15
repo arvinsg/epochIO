@@ -13,17 +13,23 @@
 // limitations under the License.
 
 //! cargo xtask — repository automation (invoked as `cargo xtask <command>`).
-//!
-//! Design: docs/design/06-code-layout.md §10
 
 use std::process::ExitCode;
 
+mod gate;
+mod headers;
 mod layers;
+mod registry;
+mod report;
+mod source;
 
 fn main() -> ExitCode {
     let command = std::env::args().nth(1);
     match command.as_deref() {
         Some("layers") => layers::run(),
+        Some("headers") => headers::run(),
+        Some("registry") => registry::run(),
+        Some("gate") => gate::run(),
         Some(other) => {
             eprintln!("xtask: unknown command '{other}'");
             usage();
@@ -39,5 +45,8 @@ fn main() -> ExitCode {
 fn usage() {
     eprintln!("usage: cargo xtask <command>");
     eprintln!("commands:");
-    eprintln!("  layers    verify crate dependency layering (docs/design/06 §0)");
+    eprintln!("  gate       run every check below (commit gate)");
+    eprintln!("  layers     verify crate dependency layering (06 §0)");
+    eprintln!("  headers    verify the Apache-2.0 header on every source file");
+    eprintln!("  registry   verify skill directories and the AGENTS.md registry agree");
 }

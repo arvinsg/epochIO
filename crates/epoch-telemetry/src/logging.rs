@@ -16,8 +16,6 @@
 //!
 //! Two output modes (pretty for humans, JSON for aggregation) with a level
 //! filter that also honors the `RUST_LOG` environment variable.
-//!
-//! Design: docs/design/06-code-layout.md §2
 
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;

@@ -27,8 +27,6 @@
 //! The target node must already host the (un-initialized) group locally so its
 //! transport can accept replication — the assembly ensures that via
 //! [`GroupManager`](crate::raft::GroupManager) before the leader adds it.
-//!
-//! Design: docs/design/03-metanode.md §2; docs/design/01-pd.md §5
 
 use std::collections::BTreeSet;
 

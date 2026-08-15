@@ -31,8 +31,6 @@
 //! Big-endian indices keep `l`-prefixed keys in log order for range scans. All
 //! writes are fsync'd before returning (append) or before the flush callback
 //! fires, honoring raft's persist-before-ack contract.
-//!
-//! Design: docs/design/01-pd.md §2; docs/design/06-code-layout.md §8
 
 use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};

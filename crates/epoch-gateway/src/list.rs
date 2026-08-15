@@ -32,8 +32,6 @@
 //! bound (its prefix with the last byte incremented), which the next page's
 //! `start_after` jumps straight to. Cost then tracks the number of *groups*, not
 //! the number of keys.
-//!
-//! Design: docs/design/03-metanode.md §5 (LIST 分页)
 
 /// One row of a rendered LIST page: an object entry or a collapsed prefix.
 ///

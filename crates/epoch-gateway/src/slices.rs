@@ -26,8 +26,6 @@
 //! - **read** ([`slices_to_layout`]): each slice's `chunk_id` is resolved to
 //!   live shard endpoints via [`ChunkMap`], rebuilding the [`ObjectLayout`] a
 //!   GET replays.
-//!
-//! Design: docs/design/04-ec-io.md §3.1; docs/design/03-metanode.md §4.2
 
 use epoch_client::{ChunkMap, ClientError};
 use epoch_proto::grpc::meta::SliceRef;

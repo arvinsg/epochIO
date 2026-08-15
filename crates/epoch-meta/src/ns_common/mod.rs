@@ -19,8 +19,6 @@
 //! flat object head and the hier file record both embed the same
 //! [`ContentHead`] and split it the same way, and both enqueue captured slices
 //! into `delq` the same way.
-//!
-//! Design: docs/design/03-metanode.md §4.2 (head+segment), §8 (delq value 有界)
 
 use serde::{Deserialize, Serialize};
 

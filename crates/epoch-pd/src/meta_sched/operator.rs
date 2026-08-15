@@ -25,8 +25,6 @@
 //! would produce), it clears the slot. A partition whose route epoch changed
 //! out from under a pending decision is rejected (staleness guard, the
 //! ConfVerChanged idea): the next sweep re-plans on fresh state.
-//!
-//! Design: docs/design/01-pd.md §5
 
 use std::collections::HashMap;
 

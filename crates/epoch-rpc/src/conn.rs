@@ -275,7 +275,7 @@ mod tests {
     /// A request on a connection whose peer has closed must fail fast, never
     /// hang — the regression guard for a killed node's cached connection
     /// (a subsequent request would otherwise register a waiter no reader ever
-    /// completes). Design: docs/design/04-ec-io.md §3.3.
+    /// completes). Design: draft/design/04-ec-io.md §3.3.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn request_fails_fast_after_peer_closes() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind");

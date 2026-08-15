@@ -17,8 +17,6 @@
 //! These are *defaults*. The value actually in effect comes from the relevant
 //! `CodeMode` (stripe/blob size) or the disk `superblock` (extent size); do NOT
 //! reference these constants as fixed truths at runtime.
-//! Design: docs/design/06-code-layout.md §1; docs/design/04-ec-io.md §2;
-//! docs/design/02-datanode.md §1.1.
 
 /// Default blob (object cut) size: 32 MiB.
 pub const DEFAULT_BLOB_SIZE: u64 = 32 * 1024 * 1024;
