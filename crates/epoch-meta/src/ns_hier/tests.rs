@@ -584,3 +584,109 @@ fn create_is_deterministic_across_replay() {
     assert_eq!(out_a.ops, out_b.ops, "same counter → byte-identical ops");
     assert_eq!(ino_a.next(), ino_b.next());
 }
+
+/// INVARIANT(design 03 §4.2): a hier file whose slice list overflows the head
+/// must read back *whole*. The head keeps the first `HEAD_EMBEDDED_SLICES`, the
+/// rest live in `meta_seg` — a read path that serves only the embedded slices
+/// silently truncates every large file (the EC hier body defect this covers).
+#[test]
+fn full_slices_reassembles_head_and_overflow_segments() {
+    let (_dir, engine) = engine();
+    let mut ino = allocator();
+    // Two full segments' worth of overflow plus a partial one.
+    let all = slices(crate::ns_common::HEAD_EMBEDDED_SLICES + crate::ns_common::SEGMENT_SLICES + 5);
+    run(
+        &engine,
+        &mut ino,
+        &write_op(1, b"big.ckpt", ContentHead::Slices(all.clone())),
+    );
+
+    let FsRecord::File(file) = lookup(&engine, bucket(), 1, b"big.ckpt")
+        .expect("lookup")
+        .expect("present")
+    else {
+        panic!("expected a file");
+    };
+    // The head itself holds only the embedded prefix.
+    let ContentHead::Slices(embedded) = &file.content else {
+        panic!("expected slices");
+    };
+    assert_eq!(embedded.len(), crate::ns_common::HEAD_EMBEDDED_SLICES);
+    assert_eq!(file.seg_count, 2);
+
+    // The assembled list is the original, in order.
+    let full = full_slices(&engine, bucket(), 1, b"big.ckpt", &file).expect("full slices");
+    assert_eq!(full, all);
+}
+
+/// An inline hier file has no slice list to assemble (and no segments to read).
+#[test]
+fn full_slices_of_an_inline_file_is_empty() {
+    let (_dir, engine) = engine();
+    let mut ino = allocator();
+    run(
+        &engine,
+        &mut ino,
+        &write_op(1, b"small.txt", ContentHead::Inline(b"hello".to_vec())),
+    );
+    let FsRecord::File(file) = lookup(&engine, bucket(), 1, b"small.txt")
+        .expect("lookup")
+        .expect("present")
+    else {
+        panic!("expected a file");
+    };
+    assert!(
+        full_slices(&engine, bucket(), 1, b"small.txt", &file)
+            .expect("full slices")
+            .is_empty()
+    );
+}
+
+/// A single overflow segment is addressable by number, and a number past
+/// `seg_count` is absent (the read path's bound).
+#[test]
+fn get_segment_addresses_one_segment_by_number() {
+    let (_dir, engine) = engine();
+    let mut ino = allocator();
+    let all = slices(crate::ns_common::HEAD_EMBEDDED_SLICES + 3);
+    run(
+        &engine,
+        &mut ino,
+        &write_op(1, b"f", ContentHead::Slices(all.clone())),
+    );
+    let seg = get_segment(&engine, bucket(), 1, b"f", 0)
+        .expect("get segment")
+        .expect("segment 0 present");
+    assert_eq!(seg.slices, all[crate::ns_common::HEAD_EMBEDDED_SLICES..]);
+    assert!(
+        get_segment(&engine, bucket(), 1, b"f", 1)
+            .expect("get segment")
+            .is_none()
+    );
+}
+
+/// Overwriting a large EC file captures *every* slice — embedded and overflow —
+/// into the delete queue (INVARIANT 03 §5). Missing the segments here would leak
+/// the bulk of a large file's blobs on every overwrite.
+#[test]
+fn overwriting_a_segmented_file_captures_all_slices() {
+    let (_dir, engine) = engine();
+    let mut ino = allocator();
+    let all = slices(crate::ns_common::HEAD_EMBEDDED_SLICES + 7);
+    run_seq(
+        &engine,
+        &mut ino,
+        &write_op(1, b"big", ContentHead::Slices(all.clone())),
+        1,
+    );
+    run_seq(
+        &engine,
+        &mut ino,
+        &write_op(1, b"big", ContentHead::Inline(b"replaced".to_vec())),
+        2,
+    );
+    // The captured set spans both delq segments the enqueue split it into.
+    let mut captured = delq_slices(&engine, 1, b"big", 2, 0);
+    captured.extend(delq_slices(&engine, 1, b"big", 2, 1));
+    assert_eq!(captured, all, "every old slice must be captured");
+}

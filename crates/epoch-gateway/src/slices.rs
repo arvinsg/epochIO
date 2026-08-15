@@ -72,7 +72,6 @@ pub async fn slices_to_layout(
     size: u64,
     chunk_map: &ChunkMap,
 ) -> Result<ObjectLayout, GatewayError> {
-    let total = code.total();
     let mut blobs = Vec::with_capacity(slices.len());
     for slice in slices {
         let [blob_raw] = slice.blob_ids.as_slice() else {
@@ -83,29 +82,36 @@ pub async fn slices_to_layout(
             )));
         };
         let chunk_id = ChunkId::new(slice.chunk_id);
-        let placement = resolve_placement(chunk_id, total, chunk_map)
+        // Reconstruct with the chunk's *own* recorded code mode (10 §3 缺口 B),
+        // not the gateway's configured `code` — the two diverge after an
+        // EC-parameter change or in a replica/EC mix.
+        let (placement, blob_code) = resolve_placement_with_code(chunk_id, chunk_map)
             .await
             .map_err(|e| GatewayError::Pd(e.to_string()))?;
         blobs.push(BlobDesc {
             blob_id: BlobId::from_raw(*blob_raw),
             len: slice.blob_size as usize,
             chunk: placement,
+            code: blob_code,
         });
     }
     Ok(ObjectLayout { size, code, blobs })
 }
 
-/// Resolves a chunk to its read placement (shard slots + hosting nodes) via the
-/// chunk map, composing each slot's id with its current epoch (01 §4.4).
-async fn resolve_placement(
+/// Resolves a chunk to its placement **and** the code mode PD recorded on it
+/// (10 §3 缺口 B). The read path must reconstruct with the chunk's own mode, not
+/// the gateway's currently-configured one — otherwise an EC-parameter change (or
+/// a replica/EC mix) makes previously-written objects unreadable.
+async fn resolve_placement_with_code(
     chunk_id: ChunkId,
-    total: usize,
     chunk_map: &ChunkMap,
-) -> Result<ChunkPlacement, ClientError> {
+) -> Result<(ChunkPlacement, CodeMode), ClientError> {
     let slots = chunk_map.get(chunk_id).await?;
+    let code = proto_to_gateway_code(&slots.code_mode)?;
+    let total = code.total();
     if slots.shards.len() != total {
         return Err(ClientError::Internal(format!(
-            "chunk {} resolved to {} shards, expected {total}",
+            "chunk {} resolved to {} shards, its code mode needs {total}",
             chunk_id.get(),
             slots.shards.len()
         )));
@@ -115,7 +121,18 @@ async fn resolve_placement(
         .iter()
         .map(|s| (ShardId::new(chunk_id, s.index, s.epoch), s.node_id))
         .collect();
-    Ok(ChunkPlacement { chunk_id, shards })
+    Ok((ChunkPlacement { chunk_id, shards }, code))
+}
+
+/// Converts PD's wire `CodeMode` to the gateway's validated one.
+fn proto_to_gateway_code(code: &epoch_proto::CodeMode) -> Result<CodeMode, ClientError> {
+    CodeMode::new(
+        code.data as usize,
+        code.parity as usize,
+        code.stripe_size as usize,
+        code.blob_size as usize,
+    )
+    .map_err(|e| ClientError::Internal(format!("chunk code mode: {e}")))
 }
 
 #[cfg(test)]
@@ -139,6 +156,7 @@ mod tests {
                             (ShardId::new(ChunkId::new(5), 2, 1), NodeId::new(3)),
                         ],
                     },
+                    code: CodeMode::new(2, 1, 1 << 20, 32 << 20).expect("code"),
                 },
                 BlobDesc {
                     blob_id: BlobId::from_raw(11),
@@ -147,6 +165,7 @@ mod tests {
                         chunk_id: ChunkId::new(6),
                         shards: Vec::new(),
                     },
+                    code: CodeMode::new(2, 1, 1 << 20, 32 << 20).expect("code"),
                 },
             ],
         }

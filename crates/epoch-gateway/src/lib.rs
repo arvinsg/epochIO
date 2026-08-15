@@ -39,6 +39,7 @@ pub mod gateway;
 pub mod get;
 pub mod http;
 pub mod list;
+pub(crate) mod metrics;
 pub mod object;
 pub mod pipeline;
 pub mod put;

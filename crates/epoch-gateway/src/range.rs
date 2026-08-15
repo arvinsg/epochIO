@@ -168,6 +168,7 @@ mod tests {
             parity: 1,
             stripe_size: 1 << 20,
             blob_size: 100,
+            write_quorum: None,
         }
     }
 
@@ -184,6 +185,7 @@ mod tests {
                     chunk_id: ChunkId::new(i as u32 + 1),
                     shards: Vec::new(),
                 },
+                code: code(),
             })
             .collect();
         ObjectLayout {

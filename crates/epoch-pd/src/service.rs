@@ -53,6 +53,7 @@ use crate::journal::{ApplyResult, Journal};
 /// liveness ticker, and (later) placement ticker share, plus the [`Clock`] used
 /// to stamp heartbeat arrival on the leader and the [`WritableThreshold`] that
 /// filters the published writable set.
+#[derive(Clone)]
 pub struct PdControlService {
     journal: Arc<Journal>,
     clock: Arc<dyn Clock>,
@@ -100,6 +101,165 @@ impl PdControlService {
     /// quorum round-trip). Used to gate the heartbeat intake.
     fn is_leader(&self) -> bool {
         self.journal.raft().metrics().borrow().state.is_leader()
+    }
+
+    // --- HTTP-facing wrappers (console admin API) -----------------------------
+    //
+    // These mirror the gRPC handlers but return domain values with a plain
+    // `Err(String)` instead of a gRPC `Status`, so the console's HTTP layer can
+    // map them to HTTP status codes without depending on tonic types. Each is a
+    // thin delegation to the same logic the RPC path uses — one source of truth
+    // per operation.
+
+    /// Creates a bucket (idempotent by name). HTTP counterpart of `CreateBucket`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on a leader/raft/validation failure.
+    pub async fn create_bucket_http(
+        &self,
+        name: &str,
+        ns_mode: crate::bucket::NsMode,
+        inline_threshold: Option<u64>,
+        codemode_id: u16,
+        engine: crate::bucket::MetaEngine,
+    ) -> Result<u64, String> {
+        if name.is_empty() {
+            return Err("bucket name must not be empty".to_string());
+        }
+        match self
+            .journal
+            .create_bucket(
+                name.to_string(),
+                ns_mode,
+                inline_threshold,
+                codemode_id,
+                engine,
+                self.clock.now_millis() as i64,
+            )
+            .await
+        {
+            Ok(ApplyResult::BucketCreated { bucket_id }) => Ok(bucket_id.get()),
+            Ok(other) => Err(format!("unexpected create_bucket result: {other:?}")),
+            Err(e) => Err(format!("create_bucket failed: {e}")),
+        }
+    }
+
+    /// Tombstones a bucket for deletion (99-Q15). HTTP counterpart of `DeleteBucket`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on failure; `NotFound` maps to a 404 upstream.
+    pub async fn delete_bucket_http(&self, name: &str) -> Result<u64, String> {
+        if name.is_empty() {
+            return Err("bucket name must not be empty".to_string());
+        }
+        match self.journal.tombstone_bucket(name).await {
+            Ok(ApplyResult::BucketDeleted { bucket_id }) => Ok(bucket_id.get()),
+            Ok(ApplyResult::Rejected(_)) => Err(format!("no such bucket: {name}")),
+            Ok(other) => Err(format!("unexpected delete_bucket result: {other:?}")),
+            Err(e) => Err(format!("delete_bucket failed: {e}")),
+        }
+    }
+
+    /// Creates a range partition (AZ-aware peer selection + raft-group push).
+    /// HTTP counterpart of `CreatePartition`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on a validation/leader/raft failure.
+    pub async fn create_partition_http(
+        &self,
+        ns: crate::bucket::NsMode,
+        start: crate::meta_mgr::PartitionBound,
+        end: crate::meta_mgr::PartitionBound,
+    ) -> Result<u64, String> {
+        validate_partition_bounds(ns, &start, &end).map_err(|e| e.to_string())?;
+        {
+            let existing = self.journal.state().partitions().list();
+            if let Some(overlap) = find_overlap(&existing, ns, &start, &end) {
+                return Err(format!("range overlaps partition {overlap}"));
+            }
+        }
+        let peers = self.pick_meta_peers(3).map_err(|e| e.to_string())?;
+        match self.journal.create_partition(ns, start, end, peers).await {
+            Ok(ApplyResult::PartitionCreated { partition_id }) => {
+                let partition = self
+                    .journal
+                    .state()
+                    .partitions()
+                    .get(partition_id)
+                    .ok_or_else(|| "partition missing after commit".to_string())?;
+                for peer in &partition.peers {
+                    self.push_create_raft_group(&partition, *peer);
+                }
+                Ok(partition_id)
+            }
+            Ok(ApplyResult::Rejected(reason)) => {
+                Err(format!("create_partition rejected: {reason:?}"))
+            }
+            Ok(other) => Err(format!("unexpected create_partition result: {other:?}")),
+            Err(e) => Err(format!("create_partition failed: {e}")),
+        }
+    }
+
+    /// Writes a cluster config KV entry. HTTP counterpart of `PutConfig`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on a leader/raft failure.
+    pub async fn put_config_http(&self, key: &str, value: Vec<u8>) -> Result<(), String> {
+        if key.is_empty() {
+            return Err("config key must not be empty".to_string());
+        }
+        self.journal
+            .put_config(key.to_string(), value)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("put_config failed: {e}"))
+    }
+
+    /// Reads a cluster config value. HTTP counterpart of `GetConfig`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on a read failure.
+    pub async fn get_config_http(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.journal.state().configs().get(key))
+    }
+
+    /// Creates or replaces an access-key credential. HTTP counterpart of
+    /// `PutCredential`.
+    ///
+    /// # Errors
+    /// Returns a human-readable reason on a leader/raft failure.
+    pub async fn put_credential_http(
+        &self,
+        access_key: &str,
+        secret_key: &str,
+        allowed_buckets: Option<Vec<String>>,
+        role: crate::credential::ConsoleRole,
+    ) -> Result<(), String> {
+        if access_key.is_empty() || secret_key.is_empty() {
+            return Err("access_key and secret_key must not be empty".to_string());
+        }
+        self.journal
+            .put_credential(
+                access_key.to_string(),
+                secret_key.to_string(),
+                allowed_buckets,
+                role,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("put_credential failed: {e}"))
+    }
+
+    /// Lists every partition's route view. HTTP counterpart of `ListPartitions`.
+    #[must_use]
+    pub fn list_partitions_http(&self) -> Vec<pd::MetaPartitionView> {
+        self.journal
+            .state()
+            .partitions()
+            .list()
+            .iter()
+            .map(|p| self.partition_to_proto(p))
+            .collect()
     }
 
     /// Picks `count` live META-role nodes for a new partition's voter set,
@@ -584,6 +744,34 @@ impl pd::pd_control_server::PdControl for PdControlService {
         Ok(Response::new(pd::ListBucketsResponse { buckets }))
     }
 
+    async fn delete_bucket(
+        &self,
+        request: Request<pd::DeleteBucketRequest>,
+    ) -> Result<Response<pd::DeleteBucketResponse>, Status> {
+        let req = request.into_inner();
+        if req.name.is_empty() {
+            return Err(Status::invalid_argument("bucket name must not be empty"));
+        }
+        // 99-Q15 step 1: tombstone the bucket. The record stays (status DELETING)
+        // until every partition purges its records via DeleteRange; the purge is
+        // driven separately once the metadata is gone.
+        match self.journal.tombstone_bucket(&req.name).await {
+            Ok(ApplyResult::BucketDeleted { bucket_id }) => {
+                Ok(Response::new(pd::DeleteBucketResponse {
+                    bucket_id: bucket_id.get(),
+                }))
+            }
+            Ok(ApplyResult::Rejected(_)) => {
+                Err(Status::not_found(format!("no such bucket: {}", req.name)))
+            }
+            Ok(other) => Err(Status::internal(format!(
+                "unexpected delete_bucket result: {other:?}"
+            ))),
+            Err(PdError::NotLeader) => Err(not_leader_now()),
+            Err(e) => Err(Status::internal(format!("delete_bucket failed: {e}"))),
+        }
+    }
+
     async fn put_config(
         &self,
         request: Request<pd::PutConfigRequest>,
@@ -1047,6 +1235,9 @@ fn code_mode_to_proto(mode: &CodeMode) -> pd::CodeMode {
         parity: u32::from(mode.parity),
         stripe_size: mode.stripe_size,
         blob_size: mode.blob_size,
+        // The effective quorum (explicit, or the legacy derived value for a
+        // pre-field record, 10 §6 Q1).
+        write_quorum: u32::from(mode.write_quorum()),
     }
 }
 
@@ -1123,6 +1314,15 @@ fn bucket_to_proto(bucket: &crate::bucket::BucketMeta) -> pd::BucketInfo {
         codemode_id: u32::from(bucket.codemode_id),
         engine: meta_engine_to_proto(bucket.engine) as i32,
         created_at: bucket.created_at,
+        status: bucket_status_to_proto(bucket.status) as i32,
+    }
+}
+
+/// Maps the domain bucket lifecycle state to its wire enum.
+fn bucket_status_to_proto(status: crate::bucket::BucketStatus) -> pd::BucketStatus {
+    match status {
+        crate::bucket::BucketStatus::Active => pd::BucketStatus::Active,
+        crate::bucket::BucketStatus::Deleting => pd::BucketStatus::Deleting,
     }
 }
 

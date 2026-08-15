@@ -161,6 +161,11 @@ pub struct CodeSpec {
     pub stripe_size: usize,
     /// Blob (object cut) size in bytes.
     pub blob_size: usize,
+    /// Write quorum (10 §3 缺口 C): shards that must commit for a durable write.
+    /// Explicit — EC's `parity/2` tolerance and a replica's `N/2+1` are different
+    /// policies, so it is configured, not derived. `None` → the legacy derived
+    /// value (`total − max(1, parity/2)`).
+    pub write_quorum: Option<usize>,
 }
 
 impl CodeSpec {
@@ -567,6 +572,11 @@ impl ClusterConfig {
                 .map_err(|_| ConfigError::Code("stripe_size exceeds u32"))?,
             blob_size: u64::try_from(self.code.blob_size)
                 .map_err(|_| ConfigError::Code("blob_size exceeds u64"))?,
+            write_quorum: self
+                .code
+                .write_quorum
+                .map(|q| u8::try_from(q).map_err(|_| ConfigError::Code("write_quorum exceeds u8")))
+                .transpose()?,
         })
     }
 

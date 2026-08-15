@@ -460,6 +460,55 @@ message HierReaddirResponse {
   repeated HierDirEntry entries = 2;
 }
 
+// HierRename — atomically rename `from` → `to` within one directory (03 §6.2
+// same-dir rename, the checkpoint-publish primitive). Both names must route to
+// the same partition; a cross-split rename is rejected before proposal with
+// `rejected="EXDEV"` (v1 semantics, txn-lite is Phase 3).
+message HierRenameRequest {
+  uint64 bucket_id = 1;
+  // The shared parent directory inode.
+  uint64 parent_ino = 2;
+  bytes from = 3;
+  bytes to = 4;
+  int64 ts_millis = 5;
+}
+
+message HierRenameResponse {
+  RouteError error = 1;
+  // Empty when applied; "EXDEV" for a cross-partition rename attempt, or a
+  // reason for a type mismatch (e.g. source is a directory).
+  string rejected = 2;
+}
+
+// HierRmdir — remove an empty directory (03 §6.2 two-step): step 1 unlinks the
+// child dir from its parent (rejected if non-empty), step 2 reclaims its
+// sentinel. The two steps are separate RPCs (mkdir's mirror); the orphan sweep
+// is the backstop for a crash between them.
+message HierRmdirUnlinkRequest {
+  uint64 bucket_id = 1;
+  uint64 parent_ino = 2;
+  bytes name = 3;
+  int64 ts_millis = 4;
+}
+
+message HierRmdirUnlinkResponse {
+  RouteError error = 1;
+  // Empty when applied; a reason when the directory is non-empty or missing.
+  string rejected = 2;
+}
+
+message HierRmdirSentinelRequest {
+  uint64 bucket_id = 1;
+  // The directory's own inode (returned by lookup/mkdir).
+  uint64 ino = 2;
+  int64 ts_millis = 3;
+}
+
+message HierRmdirSentinelResponse {
+  RouteError error = 1;
+  string rejected = 2;
+}
+
 // ExportReferences — GcRound coordinator → MetaNode leader (01 §6.3 / Q27): scan
 // a hosted partition's primary index and return every referenced blob id (the
 // GC keep-set). `hosted=false` if this node does not host/lead the partition.
@@ -472,6 +521,26 @@ message ExportReferencesResponse {
   // Referenced blob ids (raw u64), ascending. A DataNode diffs its on-disk
   // blobs against the union of these across partitions.
   repeated uint64 blob_ids = 2;
+}
+
+// DeleteRange — purge every record under one bucket prefix (99-Q15 bucket
+// deletion): the partition deletes all keys in its owned range whose key starts
+// `type | bucket_id` across every CF that holds bucket-scoped data. Called by
+// the PD-driven bucket-delete flow once the bucket is tombstoned (DELETING).
+// The blob bodies this orphans are reclaimed separately by GcRound (01 §6.3);
+// DeleteRange only removes metadata.
+message DeleteRangeRequest {
+  uint64 partition_id = 1;
+  // The bucket whose records to purge.
+  uint64 bucket_id = 2;
+}
+
+message DeleteRangeResponse {
+  // False when the addressed node does not lead this partition (the caller
+  // re-resolves the leader and retries).
+  bool hosted = 1;
+  // Records purged (telemetry only; not a correctness signal).
+  uint64 purged = 2;
 }
 
 // The MetaNode service. One gRPC server also mounts the raft transport
@@ -498,5 +567,9 @@ service MetaNode {
   rpc HierMkdirSentinel(HierMkdirSentinelRequest) returns (HierMkdirSentinelResponse);
   rpc HierMkdirLink(HierMkdirLinkRequest) returns (HierMkdirLinkResponse);
   rpc HierReaddir(HierReaddirRequest) returns (HierReaddirResponse);
+  rpc HierRename(HierRenameRequest) returns (HierRenameResponse);
+  rpc HierRmdirUnlink(HierRmdirUnlinkRequest) returns (HierRmdirUnlinkResponse);
+  rpc HierRmdirSentinel(HierRmdirSentinelRequest) returns (HierRmdirSentinelResponse);
   rpc ExportReferences(ExportReferencesRequest) returns (ExportReferencesResponse);
+  rpc DeleteRange(DeleteRangeRequest) returns (DeleteRangeResponse);
 }

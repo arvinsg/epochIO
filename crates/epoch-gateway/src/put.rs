@@ -121,6 +121,7 @@ impl Writer {
                 blob_id,
                 len: slice.len(),
                 chunk: chunk.clone(),
+                code: *code,
             });
             offset = end;
         }
@@ -174,7 +175,12 @@ pub(crate) async fn write_blob(
             .await
             {
                 Ok(result) => result,
-                Err(_) => Err(EpochError::Busy),
+                Err(_) => {
+                    // A wedged shard (04 §3.3): count it so slow-node patterns
+                    // are visible on /metrics, not just in logs.
+                    crate::metrics::record_shard_timeout();
+                    Err(EpochError::Busy)
+                }
             }
         });
     }
@@ -197,6 +203,7 @@ pub(crate) async fn write_blob(
             Err(join) => tracing::warn!(error = %join, "shard write task failed"),
         }
         if committed >= quorum {
+            crate::metrics::record_quorum_ack();
             // TODO(repair-report M7): report the shards still in flight /
             // failed as repair candidates once the ShardRepair intake exists.
             set.detach_all();

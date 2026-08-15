@@ -24,6 +24,8 @@ workspace = true
 
 [dependencies]
 epoch-proto = { workspace = true, features = ["serde", "grpc"] }
+epoch-telemetry = { workspace = true }
+prometheus = { workspace = true }
 epoch-rocks = { workspace = true }
 epoch-rpc = { workspace = true }
 async-trait = { workspace = true }
@@ -48,6 +50,10 @@ hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 include_dir = { workspace = true }
 getrandom = { workspace = true }
+# SigV4 presigned-URL generation for the console object-download 302 (08 §4).
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

@@ -43,6 +43,7 @@ fn code_mode() -> CodeMode {
         parity: 1,
         stripe_size: 1 << 20,
         blob_size: 32 << 20,
+        write_quorum: None,
     }
 }
 
@@ -378,7 +379,9 @@ async fn rebind_onto_a_node_already_holding_a_shard_is_rejected() {
     journal.shutdown().await.expect("shutdown");
 }
 
-/// Proposes a `CommitShardRepair` and returns `(new_epoch, rebound)`.
+/// Proposes a `CommitShardRepair` and returns `(new_epoch, rebound)`. Seals the
+/// chunk first — the rebind fence (01 §6.3 invariant 4) requires it, and the
+/// data-plane fanout simply warns against these unpeered test disks.
 async fn commit(
     journal: &Journal,
     chunk_id: ChunkId,
@@ -387,6 +390,10 @@ async fn commit(
     new_disk: DiskId,
     committer: NodeId,
 ) -> (u32, bool) {
+    journal
+        .seal_chunk(chunk_id)
+        .await
+        .expect("seal before repair commit");
     match journal
         .commit_shard_repair(CommitShardRepair {
             chunk_id,

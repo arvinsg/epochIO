@@ -263,6 +263,16 @@ impl PdState {
             PdEntry::CreateBucket(cmd) => Ok(ApplyResult::BucketCreated {
                 bucket_id: self.buckets.apply_create(batch, cmd)?,
             }),
+            PdEntry::TombstoneBucket(cmd) => {
+                match self.buckets.apply_tombstone(batch, &cmd.name)? {
+                    Some(bucket_id) => Ok(ApplyResult::BucketDeleted { bucket_id }),
+                    None => Ok(ApplyResult::Rejected(RejectReason::NotFound)),
+                }
+            }
+            PdEntry::PurgeBucket(cmd) => match self.buckets.apply_purge(batch, &cmd.name)? {
+                Some(bucket_id) => Ok(ApplyResult::BucketDeleted { bucket_id }),
+                None => Ok(ApplyResult::Rejected(RejectReason::NotFound)),
+            },
             PdEntry::CreatePartition(cmd) => {
                 // Every peer must be a registered node with the META role
                 // (cross-manager invariant, deterministic — reads committed

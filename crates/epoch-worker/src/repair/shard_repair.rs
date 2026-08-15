@@ -87,6 +87,12 @@ impl<B: RepairBackend> ShardRepairTask<B> {
     ///   (a later re-dispatch retries);
     /// - [`SubtaskError::Failed`] on an unrecoverable rebuild/backend error.
     pub async fn run(&self) -> Result<CommitOutcome, SubtaskError> {
+        // Seal first (01 §6.3 不变量 4): fence the chunk before reading any
+        // survivor, so the blob set this task rebuilds is closed against new
+        // writes (a write landing mid-rebuild would otherwise be missing from
+        // the rebuilt shard after the rebind's epoch bump — silent redundancy
+        // loss). Idempotent, so a retry re-seals harmlessly.
+        self.backend.seal_chunk(self.layout.chunk_id).await?;
         let ec = epoch_ec::Erasure::new(self.layout.data, self.layout.parity)
             .map_err(|e| SubtaskError::Failed(format!("erasure: {e}")))?;
         let extent = self.backend.ensure_rebuild_extent(self.shard_id()).await?;
@@ -184,6 +190,9 @@ mod tests {
 
     #[async_trait]
     impl RepairBackend for FakeBackend {
+        async fn seal_chunk(&self, _chunk_id: ChunkId) -> Result<(), SubtaskError> {
+            Ok(())
+        }
         async fn read_shard(
             &self,
             _node: NodeId,

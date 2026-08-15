@@ -38,6 +38,7 @@ pub mod job;
 pub mod journal;
 pub mod meta_mgr;
 pub mod meta_sched;
+pub(crate) mod metrics;
 pub mod raft;
 pub mod service;
 pub mod shard_repair;

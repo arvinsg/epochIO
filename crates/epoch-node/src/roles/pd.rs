@@ -69,7 +69,8 @@ pub async fn run(
 
     // 3. gRPC: raft peer transport + control plane on one port.
     let raft_service = PdRaftPeerService::new(journal.raft().clone()).into_server();
-    let control = PdControlService::new(Arc::clone(&journal), Arc::new(SystemClock)).into_server();
+    let control_service = PdControlService::new(Arc::clone(&journal), Arc::new(SystemClock));
+    let control = control_service.clone().into_server();
     let serve = tonic::transport::Server::builder()
         .add_service(raft_service)
         .add_service(control)
@@ -128,6 +129,16 @@ pub async fn run(
         config.scheduler.inspect_interval(),
     );
 
+    // GcRound trigger (M7 追加, 01 §6.3: PD 只发 Round 号): maintain the
+    // replicated round bookkeeping — completing the round that ran its interval
+    // and opening the next — so every DataNode's self-driven scan observes a
+    // well-defined, monotonic round number. Same cadence as the node-side scan.
+    let _gc_trigger = epoch_pd::job::spawn_gc_trigger(
+        Arc::clone(&journal),
+        config.gc.interval(),
+        Arc::new(SystemClock),
+    );
+
     // Observability: serve /metrics on the control port + 1000 (08 §5.1, each
     // role exposes its own endpoint) and keep the PD raft gauges fresh. Both
     // handles abort on drop, so a killed replica stops serving/updating.
@@ -146,7 +157,8 @@ pub async fn run(
     // on `epoch-client`. A bad PD endpoint list only disables object browse (the
     // endpoints answer 501) — it never blocks the PD role from serving.
     let pd_endpoints: Vec<String> = config.pd_members().into_values().collect();
-    let mut console_state = epoch_pd::console::ConsoleState::new(Arc::clone(&journal));
+    let mut console_state =
+        epoch_pd::console::ConsoleState::new(Arc::clone(&journal)).with_service(control_service);
     match epoch_client::PdClient::connect(&pd_endpoints) {
         Ok(pd_client) => {
             let browser =

@@ -421,6 +421,7 @@ mod tests {
                 parity: 1,
                 stripe_size: 1024,
                 blob_size: 1024,
+                write_quorum: None,
             },
             writer: WriterSpec { token: 1 },
             chunks: vec![ChunkSpec {

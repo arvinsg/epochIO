@@ -26,24 +26,28 @@
 //!   (a shallow, delimiter-`/` listing — the DFS-merge full form is a
 //!   follow-up, this covers the `aws s3 ls s3://bucket/dir/` path).
 //!
-//! `ROOT_INO` (=1) is the path-walk origin (03 §6.5). The gateway does not EC
-//! hier file bodies in M6 — a hier PUT stores its body inline via `HierWrite`
-//! (EC hier bodies reuse the flat pipeline in a follow-up); this keeps the MVP
-//! hier path (checkpoint-style small files) simple and correct.
+//! `ROOT_INO` (=1) is the path-walk origin (03 §6.5). This module owns the
+//! *namespace* half of a hier operation only — the path walk, implicit mkdir,
+//! and conflict rules. The *body* half (inline vs EC, admission, reconstruction,
+//! ranged reads) is the same machinery flat buckets use and lives in
+//! [`ObjectService`](crate::object::ObjectService), which drives the resolvers
+//! here. A hier file body is therefore inline or EC on exactly the flat rule
+//! (03 §6.4), not inline-only.
 //!
 //! Design: docs/design/03-metanode.md §6.4/§6.5
 
 use epoch_client::{ClientError, MetaClient};
 use epoch_proto::consts::ROOT_INO;
-use epoch_proto::grpc::meta::{self, HierEntryKind};
+use epoch_proto::grpc::meta::{self, HierEntryKind, SliceRef};
 
 use crate::error::GatewayError;
-use crate::etag;
 
 /// A resolved path: the leaf's parent directory inode and the leaf name.
-struct LeafPath {
-    parent_ino: u64,
-    name: Vec<u8>,
+pub struct LeafPath {
+    /// The inode of the directory holding the leaf.
+    pub parent_ino: u64,
+    /// The leaf's name within that directory.
+    pub name: Vec<u8>,
 }
 
 /// Splits an S3 key into non-empty `/`-separated components. A trailing slash
@@ -54,18 +58,15 @@ fn components(key: &[u8]) -> Vec<&[u8]> {
         .collect()
 }
 
-/// The outcome of a hier S3 operation the HTTP layer maps to a response.
-pub struct HierObject {
-    /// The object bytes.
-    pub body: Vec<u8>,
-    /// The S3 ETag digest.
-    pub etag: [u8; 16],
-    /// Size in bytes.
-    pub size: u64,
-    /// HTTP metadata stored at write time (replayed on the response).
-    pub http: epoch_client::HttpMeta,
-    /// Last-modified, wall-clock millis as recorded by the write.
-    pub mtime: i64,
+/// A hier file resolved by a path walk: its head plus its content reference
+/// (inline bytes, or the full EC slice list assembled by the MetaNode).
+pub struct HierFile {
+    /// The file's head view (size, etag, mtime, HTTP metadata).
+    pub head: meta::ObjectHeadView,
+    /// The inline bytes, when the head is inline.
+    pub inline_data: Vec<u8>,
+    /// The full EC slice list, when the head is not inline.
+    pub slices: Vec<SliceRef>,
 }
 
 /// Walks the path to the leaf's parent, creating intermediate directories
@@ -149,24 +150,27 @@ async fn mkdir(
     Ok(child_ino)
 }
 
-/// PUT into a hier bucket (03 §6.4 隐式建目录): ensure the path's directories,
-/// then write the leaf file (inline body for M6). Returns the S3 ETag.
+/// Resolves a hier PUT's target: ensures every intermediate directory exists
+/// (implicit mkdir, 03 §6.4) and rejects a leaf name already held by a
+/// directory. The caller writes the body through
+/// [`commit_write`] once it has an inline body or an EC slice list.
+///
+/// Splitting resolve from commit is what lets a hier body take the *same*
+/// inline-vs-EC path a flat object takes: the body machinery never has to know
+/// about path walks, and the path walk never has to know about EC.
 ///
 /// # Errors
-/// [`GatewayError::DirFileConflict`] (→ 400) on a dir/file clash;
-/// [`GatewayError::Meta`] on a metadata failure.
-pub async fn put(
+/// [`GatewayError::DirFileConflict`] (→ 400) when a path component is a file or
+/// the leaf name is a directory; [`GatewayError::Meta`] on a metadata failure.
+pub async fn resolve_for_write(
     meta: &MetaClient,
     bucket: u64,
     key: &[u8],
-    body: &[u8],
     ts_millis: i64,
-    http: epoch_client::HttpMeta,
-) -> Result<[u8; 16], GatewayError> {
+) -> Result<LeafPath, GatewayError> {
     let Some(leaf) = walk_to_leaf(meta, bucket, key, true, ts_millis).await? else {
         return Err(GatewayError::Meta("path walk failed".to_string()));
     };
-    let etag = etag::object_etag(body);
     // A leaf whose name is an existing directory is a dir/file conflict.
     let looked = meta
         .hier_lookup(bucket, leaf.parent_ino, &leaf.name)
@@ -175,60 +179,62 @@ pub async fn put(
     if HierEntryKind::try_from(looked.kind) == Ok(HierEntryKind::HierEntryDir) {
         return Err(GatewayError::DirFileConflict);
     }
-    if let Some(reason) = meta
+    Ok(leaf)
+}
+
+/// Commits a resolved hier write: one `HierWrite` carrying either inline bytes
+/// or an EC slice list (exactly the two `PutObject` forms, 03 §6.4). An
+/// overwrite captures the old file's slices at apply time (INVARIANT 03 §5), so
+/// replacing an EC file never leaks its blobs.
+///
+/// # Errors
+/// [`GatewayError::Meta`] on a metadata failure or a rejected write.
+#[allow(clippy::too_many_arguments)]
+pub async fn commit_write(
+    meta: &MetaClient,
+    bucket: u64,
+    leaf: &LeafPath,
+    size: u64,
+    etag: [u8; 16],
+    inline_data: Vec<u8>,
+    slices: Vec<SliceRef>,
+    ts_millis: i64,
+    http: epoch_client::HttpMeta,
+) -> Result<(), GatewayError> {
+    let written = meta
         .hier_write(epoch_client::HierWrite {
             bucket,
             parent_ino: leaf.parent_ino,
             name: &leaf.name,
-            size: body.len() as u64,
+            size,
             etag,
-            inline_data: body.to_vec(),
-            slices: Vec::new(),
+            inline_data,
+            slices,
             ts_millis,
             http,
         })
         .await
-        .map_err(meta_err)?
-    {
+        .map_err(write_err)?;
+    if let Some(reason) = written {
         return Err(GatewayError::Meta(format!("hier write: {reason}")));
     }
-    Ok(etag)
+    Ok(())
 }
 
-/// GET/HEAD from a hier bucket: path-walk to the file. Returns `None` if any
-/// component is missing or the leaf is not a file.
+/// Resolves a hier read: path-walk to the leaf and return the file's head and
+/// content reference. `None` when a component is missing or the leaf is a
+/// directory (→ `NoSuchKey`).
+///
+/// The MetaNode assembles the *full* slice list (head-embedded + overflow
+/// segments, 03 §4.2), so a large EC file resolves in one round trip.
 ///
 /// # Errors
 /// [`GatewayError::Meta`] on a metadata failure.
-pub async fn head(
+pub async fn resolve_for_read(
     meta: &MetaClient,
     bucket: u64,
     key: &[u8],
-) -> Result<Option<meta::ObjectHeadView>, GatewayError> {
-    let Some(leaf) = walk_to_leaf(meta, bucket, key, false, 0).await? else {
-        return Ok(None);
-    };
-    let looked = meta
-        .hier_lookup(bucket, leaf.parent_ino, &leaf.name)
-        .await
-        .map_err(meta_err)?;
-    match HierEntryKind::try_from(looked.kind).unwrap_or(HierEntryKind::HierEntryUnspecified) {
-        HierEntryKind::HierEntryFile => Ok(looked.file),
-        _ => Ok(None),
-    }
-}
-
-/// GET from a hier bucket: path-walk to the file and return its body. Inline
-/// files (the M6 hier form) return their stored bytes; EC hier files (slices)
-/// are a documented follow-up (the flat EC read path is reused there).
-///
-/// # Errors
-/// [`GatewayError::Meta`] on a metadata failure.
-pub async fn get(
-    meta: &MetaClient,
-    bucket: u64,
-    key: &[u8],
-) -> Result<Option<HierObject>, GatewayError> {
+) -> Result<Option<HierFile>, GatewayError> {
     let Some(leaf) = walk_to_leaf(meta, bucket, key, false, 0).await? else {
         return Ok(None);
     };
@@ -241,21 +247,23 @@ pub async fn get(
     {
         return Ok(None);
     }
-    let head = looked.file.unwrap_or_default();
-    // Inline hier files carry their bytes in the lookup; EC hier files (slices)
-    // reconstruct through the flat EC read path — a documented M6 follow-up.
-    if !looked.slices.is_empty() {
-        return Err(GatewayError::Meta(
-            "EC hierarchical file bodies are not yet served (M6 follow-up)".to_string(),
-        ));
-    }
-    Ok(Some(HierObject {
-        body: looked.inline_data,
-        etag: to_etag(&head.etag),
-        size: head.size,
-        http: epoch_client::HttpMeta::from_view(&head),
-        mtime: head.mtime,
+    Ok(Some(HierFile {
+        head: looked.file.unwrap_or_default(),
+        inline_data: looked.inline_data,
+        slices: looked.slices,
     }))
+}
+
+/// HEAD from a hier bucket: the leaf file's head view, or `None` if absent.
+///
+/// # Errors
+/// [`GatewayError::Meta`] on a metadata failure.
+pub async fn head(
+    meta: &MetaClient,
+    bucket: u64,
+    key: &[u8],
+) -> Result<Option<meta::ObjectHeadView>, GatewayError> {
+    Ok(resolve_for_read(meta, bucket, key).await?.map(|f| f.head))
 }
 
 /// LIST a hier bucket: `readdir` the directory the prefix names (03 §6.4).
@@ -364,9 +372,15 @@ fn meta_err(e: ClientError) -> GatewayError {
     GatewayError::Meta(e.to_string())
 }
 
-/// Decodes a 16-byte wire etag (bad length → zeros).
-fn to_etag(bytes: &[u8]) -> [u8; 16] {
-    <[u8; 16]>::try_from(bytes).unwrap_or([0; 16])
+/// Maps a write's client error, keeping the inline guard's `RESOURCE_EXHAUSTED`
+/// (03 §4.3) as its own typed variant so the caller can downgrade to EC.
+fn write_err(e: ClientError) -> GatewayError {
+    match &e {
+        ClientError::Rpc { code, .. } if code == "ResourceExhausted" => {
+            GatewayError::MetaInlineGuard(e.to_string())
+        }
+        _ => GatewayError::Meta(e.to_string()),
+    }
 }
 
 #[cfg(test)]

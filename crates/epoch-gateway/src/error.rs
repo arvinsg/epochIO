@@ -82,6 +82,15 @@ pub enum GatewayError {
     #[error("meta: {0}")]
     Meta(String),
 
+    /// The MetaNode partition's inline guard refused an inline write
+    /// (`RESOURCE_EXHAUSTED`, 03 §4.3 inline 占比). Kept distinct from
+    /// [`Meta`](GatewayError::Meta) because it is not a failure but a *signal*:
+    /// the write path retries the body as EC (the transparent downgrade). A
+    /// string match on the rendered message would silently stop downgrading the
+    /// day that message changes.
+    #[error("meta inline guard refused the write: {0}")]
+    MetaInlineGuard(String),
+
     /// A hierarchical-bucket path component conflicts with an existing file
     /// (03 §6.4: dir/file 冲突 → 400 InvalidObjectName).
     #[error("path component conflicts with an existing file (dir/file conflict)")]
@@ -157,6 +166,11 @@ pub fn to_s3_error(err: GatewayError) -> s3s::S3Error {
             // A metadata routing/leader flap is transient; surface as 503 so
             // the client retries (the object layer already exhausted its own
             // bounded redirect budget).
+            s3s::S3Error::with_message(S3ErrorCode::ServiceUnavailable, msg)
+        }
+        // The inline guard is a downgrade signal the write path consumes; if one
+        // ever escapes to here the EC retry itself failed, so answer 503.
+        GatewayError::MetaInlineGuard(msg) => {
             s3s::S3Error::with_message(S3ErrorCode::ServiceUnavailable, msg)
         }
         // EC, sizing, shard-count, quorum, writer, PD → an internal fault the

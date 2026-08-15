@@ -269,8 +269,11 @@ fn space_stats_impl(root: &Path) -> (u64, u64, u64) {
     if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
         return (0, 0, 0);
     }
-    let total = u64::from(stat.f_blocks) * stat.f_frsize;
-    let free = u64::from(stat.f_bavail) * stat.f_frsize;
+    // `f_blocks`/`f_bavail`/`f_frsize` are all `fsblkcnt_t`/`c_ulong` = u64 on
+    // the supported target (x86_64 Linux, 99 v0.12 Linux-first), so the products
+    // need no widening conversion.
+    let total = stat.f_blocks * stat.f_frsize;
+    let free = stat.f_bavail * stat.f_frsize;
     (total, free, total.saturating_sub(free))
 }
 

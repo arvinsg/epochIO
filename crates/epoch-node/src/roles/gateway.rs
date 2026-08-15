@@ -124,7 +124,7 @@ pub async fn run(
     // secret lookup (`CredentialAuth`) and bucket-level authorization inside the
     // backend (01 §6). One cache, so a revoked key stops signing *and* stops
     // authorizing at the same moment.
-    let backend = S3Backend::new(objects, buckets, credentials.clone());
+    let backend = S3Backend::new(objects, buckets, credentials.clone(), pd.clone());
     let mut builder = S3ServiceBuilder::new(backend);
     builder.set_auth(CredentialAuth::new(credentials));
     let s3 = builder.build();

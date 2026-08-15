@@ -1049,6 +1049,70 @@ pub fn lookup(
     read_record(store, bucket, parent_ino, name)
 }
 
+/// One overflow segment of a hier file's slice list, by number (03 §4.2 shared
+/// `meta_seg` CF — the hier mirror of [`crate::ns_flat::get_segment`]).
+///
+/// A file whose slice list exceeds [`crate::ns_common::HEAD_EMBEDDED_SLICES`]
+/// keeps only the first slices in its head; the rest live here. A read path that
+/// serves only the head-embedded slices silently truncates every large file, so
+/// the service layer must walk `seg_count` segments through this function.
+///
+/// # Errors
+///
+/// Returns [`MetaStoreError`] on engine or codec failure.
+pub fn get_segment(
+    store: &dyn MetaStore,
+    bucket: BucketId,
+    parent_ino: u64,
+    name: &[u8],
+    seg_no: u32,
+) -> Result<Option<SliceSegment>, MetaStoreError> {
+    store
+        .get(
+            MetaCf::MetaSeg,
+            &hier_key(
+                MetaCf::MetaSeg,
+                bucket,
+                parent_ino,
+                name,
+                &suffix::seg_no(seg_no),
+            ),
+        )?
+        .map(|bytes| decode(&bytes))
+        .transpose()
+}
+
+/// The full slice list of a hier file: its head-embedded slices followed by
+/// every overflow segment in order (03 §4.2). This is the list a GET
+/// reconstructs from — an inline file has none.
+///
+/// # Errors
+///
+/// Returns [`MetaStoreError`] on engine or codec failure, including a head that
+/// claims a segment the engine does not hold (a torn write would be a bug: the
+/// head and its segments commit in one batch).
+pub fn full_slices(
+    store: &dyn MetaStore,
+    bucket: BucketId,
+    parent_ino: u64,
+    name: &[u8],
+    file: &FileRecord,
+) -> Result<Vec<Slice>, MetaStoreError> {
+    let ContentHead::Slices(embedded) = &file.content else {
+        return Ok(Vec::new());
+    };
+    let mut slices = embedded.clone();
+    for seg_no in 0..file.seg_count {
+        let segment = get_segment(store, bucket, parent_ino, name, seg_no)?.ok_or_else(|| {
+            MetaStoreError::ValueCodec(format!(
+                "hier file claims segment {seg_no} but it is absent"
+            ))
+        })?;
+        slices.extend(segment.slices);
+    }
+    Ok(slices)
+}
+
 /// Whether a sentinel is an orphan: its recorded parent link is missing or no
 /// longer points at it (mkdir step 2 never committed, or the parent was
 /// removed, 03 §6.2). The root sentinel (no `parent_link`) is never an orphan.

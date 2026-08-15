@@ -67,6 +67,7 @@ fn sample_chunk() -> pd::ChunkView {
             parity: 2,
             stripe_size: 1 << 20,
             blob_size: 32 << 20,
+            write_quorum: 0,
         }),
         status: pd::ChunkStatus::Writable as i32,
         shards: Vec::new(),
@@ -341,6 +342,12 @@ impl pd::pd_control_server::PdControl for FakePd {
         Ok(Response::new(pd::ListCredentialsResponse {
             credentials: Vec::new(),
         }))
+    }
+    async fn delete_bucket(
+        &self,
+        _r: Request<pd::DeleteBucketRequest>,
+    ) -> Result<Response<pd::DeleteBucketResponse>, Status> {
+        Err(Status::unimplemented("delete_bucket"))
     }
 }
 

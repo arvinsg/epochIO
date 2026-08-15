@@ -81,8 +81,41 @@ pub async fn get_object(
                 got: blob.chunk.shards.len(),
             });
         }
-        let slots = read_blob_shards(&transport, &blob.chunk, blob.blob_id, total).await;
-        let decoded = pipeline::decode_blob(&ec, code.stripe_size, blob.len, &slots)?;
+        let seed = code.data;
+        let mut slots: Vec<Option<Vec<u8>>> = vec![None; total];
+        let seed_ok =
+            read_seed_shards(&transport, &blob.chunk, blob.blob_id, seed, &mut slots).await;
+        let mut decoded = if seed_ok {
+            match pipeline::decode_blob(&ec, code.stripe_size, blob.len, &slots) {
+                Ok(mut d) => {
+                    d.healed.retain(|&j| j < seed);
+                    d
+                }
+                Err(_) => {
+                    read_backfill_shards(
+                        &transport,
+                        &blob.chunk,
+                        blob.blob_id,
+                        seed,
+                        total,
+                        &mut slots,
+                    )
+                    .await;
+                    pipeline::decode_blob(&ec, code.stripe_size, blob.len, &slots)?
+                }
+            }
+        } else {
+            read_backfill_shards(
+                &transport,
+                &blob.chunk,
+                blob.blob_id,
+                seed,
+                total,
+                &mut slots,
+            )
+            .await;
+            pipeline::decode_blob(&ec, code.stripe_size, blob.len, &slots)?
+        };
         out.extend_from_slice(&decoded.bytes);
         for index in decoded.healed {
             heals.insert((blob.chunk.chunk_id.get(), index as u8));
@@ -109,41 +142,90 @@ pub async fn get_object(
     Ok(ReadObject { bytes: out, heals })
 }
 
-/// Reads all `total` shards of `blob_id` in parallel into index-ordered slots;
-/// a read that errors or misses leaves its slot `None` for reconstruction.
-async fn read_blob_shards(
+/// The seed pass (10 §3 缺口 A): read the first `seed` shards (the data shards)
+/// concurrently.  Returns `true` when every one came back — only then may the
+/// caller skip the parity backfill entirely.
+async fn read_seed_shards(
     transport: &Arc<dyn ShardTransport>,
     chunk: &ChunkPlacement,
     blob_id: BlobId,
-    total: usize,
-) -> Vec<Option<Vec<u8>>> {
+    seed: usize,
+    slots: &mut [Option<Vec<u8>>],
+) -> bool {
     let mut set = JoinSet::new();
-    for (j, &(shard, node)) in chunk.shards.iter().enumerate() {
+    for j in 0..seed {
         let transport = Arc::clone(transport);
+        let shard = chunk.shards[j].0;
+        let node = chunk.shards[j].1;
         set.spawn(async move {
-            let req = ReadShardReq {
-                shard_id: shard,
-                blob_id,
-            };
-            match transport.read_shard(node, req).await {
-                Ok(opt) => (j, opt),
-                Err(err) => {
-                    tracing::debug!(error = %err, "shard read failed; treating as missing");
-                    (j, None)
-                }
-            }
+            let res = transport
+                .read_shard(
+                    node,
+                    ReadShardReq {
+                        shard_id: shard,
+                        blob_id,
+                    },
+                )
+                .await;
+            (j, res)
         });
     }
-
-    let mut slots: Vec<Option<Vec<u8>>> = vec![None; total];
+    let mut all_present = true;
     while let Some(res) = set.join_next().await {
         match res {
-            Ok((j, Some(bytes))) => slots[j] = Some(bytes.to_vec()),
-            Ok((_, None)) => {}
-            Err(join) => tracing::warn!(error = %join, "shard read task failed"),
+            Ok((j, Ok(Some(bytes)))) => slots[j] = Some(bytes.to_vec()),
+            Ok((_j, Ok(None))) => all_present = false,
+            Ok((j, Err(err))) => {
+                all_present = false;
+                tracing::debug!(error = %err, shard = j, "seed shard read failed");
+            }
+            Err(join) => {
+                all_present = false;
+                tracing::warn!(error = %join, "seed shard task failed");
+            }
         }
     }
-    slots
+    all_present
+}
+
+/// The backfill pass (10 §3 缺口 A): a seed shard missed, so read the remaining
+/// `seed..total` (parity) shards into their slots for reconstruction.
+async fn read_backfill_shards(
+    transport: &Arc<dyn ShardTransport>,
+    chunk: &ChunkPlacement,
+    blob_id: BlobId,
+    seed: usize,
+    total: usize,
+    slots: &mut [Option<Vec<u8>>],
+) {
+    let mut set = JoinSet::new();
+    for j in seed..total {
+        let transport = Arc::clone(transport);
+        let shard = chunk.shards[j].0;
+        let node = chunk.shards[j].1;
+        set.spawn(async move {
+            let res = transport
+                .read_shard(
+                    node,
+                    ReadShardReq {
+                        shard_id: shard,
+                        blob_id,
+                    },
+                )
+                .await;
+            (j, res)
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok((j, Ok(Some(bytes)))) => slots[j] = Some(bytes.to_vec()),
+            Ok((_, Ok(None))) => {}
+            Ok((j, Err(err))) => {
+                tracing::debug!(error = %err, shard = j, "backfill shard read failed");
+            }
+            Err(join) => tracing::warn!(error = %join, "backfill shard task failed"),
+        }
+    }
 }
 
 #[cfg(test)]

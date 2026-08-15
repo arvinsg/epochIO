@@ -139,6 +139,9 @@ impl ChunkMap {
                     .map_err(|_| ClientError::Internal("code mode parity > u8".into()))?,
                 stripe_size: code_mode.stripe_size,
                 blob_size: code_mode.blob_size,
+                // The wire carries the effective quorum; 0 means a pre-field
+                // record → None so write_quorum() derives the legacy value.
+                write_quorum: u8::try_from(code_mode.write_quorum).ok().filter(|&q| q > 0),
             },
             writable: view.status == epoch_proto::grpc::pd::ChunkStatus::Writable as i32,
             shards,

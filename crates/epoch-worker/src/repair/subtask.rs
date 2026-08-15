@@ -70,6 +70,18 @@ impl ChunkLayout {
 /// in-memory double. Every method is idempotent-friendly.
 #[async_trait]
 pub trait RepairBackend: Send + Sync {
+    /// Seals the chunk being repaired (01 §6.3 不变量 4: Seal 先行) — drains its
+    /// in-flight writes and fences off new OPENs *before* any survivor read.
+    ///
+    /// This must run before the subtask reads anything: the blob set it rebuilds
+    /// was enumerated by the coordinator at expand time, and only a seal turns
+    /// that enumeration into a closed set. Without it, a write landing between
+    /// the enumeration and the rebind is absent from the rebuilt shard, and the
+    /// rebind's epoch bump then routes reads to the new shard — a silent loss of
+    /// redundancy (01 §6.4). Sealing is idempotent, so a retried or replayed
+    /// subtask re-seals harmlessly (an already-Sealed chunk succeeds).
+    async fn seal_chunk(&self, chunk_id: ChunkId) -> Result<(), SubtaskError>;
+
     /// Reads one shard's framed body for `blob_id` from `node`. `Ok(None)` = the
     /// shard is missing there (the broken/absent one); `Err` = a transient read
     /// failure (treated as missing for reconstruction, but surfaced for retry
@@ -203,6 +215,11 @@ impl<B: RepairBackend> Subtask for RepairSubtask<B> {
     }
 
     async fn execute(&self) -> Result<(), SubtaskError> {
+        // Seal first (01 §6.3 不变量 4): fence the chunk off from new writes and
+        // drain in-flight ones, so the blob set enumerated at expand time is
+        // closed before we read a single survivor. A seal failure aborts the
+        // subtask (retried by the Job) rather than risking a partial rebuild.
+        self.backend.seal_chunk(self.layout.chunk_id).await?;
         let ec = epoch_ec::Erasure::new(self.layout.data, self.layout.parity)
             .map_err(|e| SubtaskError::Failed(format!("erasure: {e}")))?;
         let extent = self.backend.ensure_rebuild_extent(self.shard_id()).await?;
@@ -304,6 +321,9 @@ mod tests {
 
     #[async_trait]
     impl RepairBackend for FakeBackend {
+        async fn seal_chunk(&self, _chunk_id: ChunkId) -> Result<(), SubtaskError> {
+            Ok(())
+        }
         async fn read_shard(
             &self,
             _node: NodeId,

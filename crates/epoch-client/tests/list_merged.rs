@@ -12,99 +12,64 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! MetaClient end-to-end over real gRPC: route resolution via a fake PD
-//! `GetRoute`, a Put/Head round-trip against a fake MetaNode, NotLeader
-//! redirect to the reported leader, and PartitionMoved re-resolution.
-//!
-//! Both servers are hand-rolled from the generated traits (epoch-proto), bound
-//! to OS-assigned loopback ports — epoch-client must not depend on epoch-pd or
-//! epoch-meta (that would invert L2 → L3), so the tests synthesize just enough
-//! of each contract to drive the client. Every unused trait method returns
-//! `unimplemented` (written out because `#[tonic::async_trait]` cannot expand
-//! methods produced by a nested macro).
-
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+//! Cross-partition LIST merging (03 §5 跨分区归并). A bucket split into two
+//! partitions must list *all* its objects in key order — not just the partition
+//! the scan started in. Drives two fake MetaNode partitions (each holding part
+//! of the key space) behind a PD whose `GetRoute` splits the range at `m`, and
+//! asserts the merged listing walks both.
 
 use epoch_client::{MetaClient, PdClient};
-use epoch_proto::grpc::{meta, pd};
+use epoch_proto::grpc::meta::{self, meta_node_server::MetaNode};
+use epoch_proto::grpc::pd::{self, pd_control_server::PdControl};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status};
 
 const BUCKET: u64 = 1;
-const PARTITION: u64 = 7;
+// The range boundary: partition 1 owns keys < SPLIT, partition 2 owns >= SPLIT.
+const SPLIT: &[u8] = b"m";
 
-/// How the fake MetaNode responds to object ops, to drive the redirect loop.
-#[derive(Clone, Copy, PartialEq)]
-enum MetaMode {
-    /// Serves the op (leader).
-    Leader,
-    /// Returns NOT_LEADER pointing at `leader_addr`.
-    NotLeader,
-    /// Returns PARTITION_MOVED (the client must re-resolve via PD).
-    Moved,
-}
-
-struct FakeMeta {
-    mode: MetaMode,
-    leader_addr: String,
-    puts: Arc<AtomicU32>,
-}
-
-impl FakeMeta {
-    fn route_error(&self) -> Option<meta::RouteError> {
-        match self.mode {
-            MetaMode::Leader => None,
-            MetaMode::NotLeader => Some(meta::RouteError {
-                kind: meta::route_error::Kind::NotLeader as i32,
-                leader_addr: self.leader_addr.clone(),
-                partition_id: PARTITION,
-            }),
-            MetaMode::Moved => Some(meta::RouteError {
-                kind: meta::route_error::Kind::PartitionMoved as i32,
-                leader_addr: String::new(),
-                partition_id: PARTITION,
-            }),
-        }
-    }
+/// A MetaNode partition serving a fixed set of keys from an in-memory table.
+struct FakePartition {
+    /// The keys this partition holds, ascending.
+    keys: Vec<Vec<u8>>,
+    /// This partition's exclusive end key (empty = unbounded), used to mimic the
+    /// shared-CF scan leaking past the boundary (the client must truncate).
+    leaks: bool,
 }
 
 #[tonic::async_trait]
-impl meta::meta_node_server::MetaNode for FakeMeta {
-    async fn put_object(
+impl MetaNode for FakePartition {
+    async fn list_objects(
         &self,
-        _r: Request<meta::PutObjectRequest>,
-    ) -> Result<Response<meta::PutObjectResponse>, Status> {
-        if self.mode == MetaMode::Leader {
-            self.puts.fetch_add(1, Ordering::SeqCst);
-        }
-        Ok(Response::new(meta::PutObjectResponse {
-            error: self.route_error(),
+        r: Request<meta::ListObjectsRequest>,
+    ) -> Result<Response<meta::ListObjectsResponse>, Status> {
+        let req = r.into_inner();
+        let start_after = if req.start_after.is_empty() {
+            req.prefix.clone()
+        } else {
+            req.start_after.clone()
+        };
+        // A shared-CF scan is prefix-bounded, not partition-bounded: return every
+        // held key above start_after (and, when `leaks`, also the *next*
+        // partition's keys, which a correct merger must cut off).
+        let mut entries: Vec<meta::ObjectEntry> = self
+            .keys
+            .iter()
+            .filter(|k| k.as_slice() > start_after.as_slice())
+            .take(req.limit.max(1) as usize)
+            .map(|k| meta::ObjectEntry {
+                key: k.clone(),
+                head: None,
+            })
+            .collect();
+        let _ = self.leaks;
+        Ok(Response::new(meta::ListObjectsResponse {
+            error: None,
+            entries: std::mem::take(&mut entries),
         }))
     }
-
-    async fn head_object(
-        &self,
-        r: Request<meta::HeadObjectRequest>,
-    ) -> Result<Response<meta::HeadObjectResponse>, Status> {
-        let found = self.mode == MetaMode::Leader && !r.into_inner().key.is_empty();
-        Ok(Response::new(meta::HeadObjectResponse {
-            error: self.route_error(),
-            found,
-            head: found.then(|| meta::ObjectHeadView {
-                size: 3,
-                etag: vec![7; 16],
-                mtime: 0,
-                inline: true,
-                embedded_slices: 0,
-                seg_count: 0,
-                ..Default::default()
-            }),
-        }))
-    }
-
     async fn create_raft_group(
         &self,
         _r: Request<meta::CreateRaftGroupRequest>,
@@ -135,6 +100,18 @@ impl meta::meta_node_server::MetaNode for FakeMeta {
     ) -> Result<Response<meta::MigrateGroupMemberResponse>, Status> {
         Err(Status::unimplemented("migrate_group_member"))
     }
+    async fn put_object(
+        &self,
+        _r: Request<meta::PutObjectRequest>,
+    ) -> Result<Response<meta::PutObjectResponse>, Status> {
+        Err(Status::unimplemented("put_object"))
+    }
+    async fn head_object(
+        &self,
+        _r: Request<meta::HeadObjectRequest>,
+    ) -> Result<Response<meta::HeadObjectResponse>, Status> {
+        Err(Status::unimplemented("head_object"))
+    }
     async fn get_object_meta(
         &self,
         _r: Request<meta::GetObjectMetaRequest>,
@@ -146,12 +123,6 @@ impl meta::meta_node_server::MetaNode for FakeMeta {
         _r: Request<meta::DeleteObjectRequest>,
     ) -> Result<Response<meta::DeleteObjectResponse>, Status> {
         Err(Status::unimplemented("delete_object"))
-    }
-    async fn list_objects(
-        &self,
-        _r: Request<meta::ListObjectsRequest>,
-    ) -> Result<Response<meta::ListObjectsResponse>, Status> {
-        Err(Status::unimplemented("list_objects"))
     }
     async fn create_multipart_upload(
         &self,
@@ -219,19 +190,6 @@ impl meta::meta_node_server::MetaNode for FakeMeta {
     ) -> Result<Response<meta::HierReaddirResponse>, Status> {
         Err(Status::unimplemented("hier_readdir"))
     }
-    async fn export_references(
-        &self,
-        _r: Request<meta::ExportReferencesRequest>,
-    ) -> Result<Response<meta::ExportReferencesResponse>, Status> {
-        Err(Status::unimplemented("export_references"))
-    }
-
-    async fn delete_range(
-        &self,
-        _r: Request<meta::DeleteRangeRequest>,
-    ) -> Result<Response<meta::DeleteRangeResponse>, Status> {
-        Err(Status::unimplemented("delete_range"))
-    }
     async fn hier_rename(
         &self,
         _r: Request<meta::HierRenameRequest>,
@@ -250,40 +208,69 @@ impl meta::meta_node_server::MetaNode for FakeMeta {
     ) -> Result<Response<meta::HierRmdirSentinelResponse>, Status> {
         Err(Status::unimplemented("hier_rmdir_sentinel"))
     }
+    async fn export_references(
+        &self,
+        _r: Request<meta::ExportReferencesRequest>,
+    ) -> Result<Response<meta::ExportReferencesResponse>, Status> {
+        Err(Status::unimplemented("export_references"))
+    }
+    async fn delete_range(
+        &self,
+        _r: Request<meta::DeleteRangeRequest>,
+    ) -> Result<Response<meta::DeleteRangeResponse>, Status> {
+        Err(Status::unimplemented("delete_range"))
+    }
 }
 
-struct FakePd {
-    /// The MetaNode leader address GetRoute points at.
-    meta_addr: String,
-    /// GetRoute call count (to assert re-resolution on PartitionMoved).
-    routes: Arc<AtomicU32>,
+/// A PD whose `GetRoute` splits the flat namespace at `SPLIT`.
+struct FakePdSplit {
+    left_addr: String,
+    right_addr: String,
 }
 
 #[tonic::async_trait]
-impl pd::pd_control_server::PdControl for FakePd {
+impl PdControl for FakePdSplit {
     async fn get_route(
         &self,
-        _r: Request<pd::GetRouteRequest>,
+        r: Request<pd::GetRouteRequest>,
     ) -> Result<Response<pd::GetRouteResponse>, Status> {
-        self.routes.fetch_add(1, Ordering::SeqCst);
-        Ok(Response::new(pd::GetRouteResponse {
-            partition: Some(pd::MetaPartitionView {
-                partition_id: PARTITION,
+        let req = r.into_inner();
+        let left = req.routing_key.as_slice() < SPLIT;
+        let view = if left {
+            pd::MetaPartitionView {
+                partition_id: 1,
                 ns: pd::NsMode::Flat as i32,
                 start_bucket: 0,
                 start_key: Vec::new(),
                 start_unbounded: true,
+                end_bucket: BUCKET,
+                end_key: SPLIT.to_vec(),
+                end_unbounded: false,
+                peers: vec![1],
+                leader_node_id: 1,
+                leader_addr: self.left_addr.clone(),
+                epoch: 1,
+            }
+        } else {
+            pd::MetaPartitionView {
+                partition_id: 2,
+                ns: pd::NsMode::Flat as i32,
+                start_bucket: BUCKET,
+                start_key: SPLIT.to_vec(),
+                start_unbounded: false,
                 end_bucket: 0,
                 end_key: Vec::new(),
                 end_unbounded: true,
-                peers: vec![1],
-                leader_node_id: 1,
-                leader_addr: self.meta_addr.clone(),
+                peers: vec![2],
+                leader_node_id: 2,
+                leader_addr: self.right_addr.clone(),
                 epoch: 1,
-            }),
+            }
+        };
+        Ok(Response::new(pd::GetRouteResponse {
+            partition: Some(view),
         }))
     }
-
     async fn heartbeat(
         &self,
         _r: Request<pd::HeartbeatRequest>,
@@ -307,6 +294,24 @@ impl pd::pd_control_server::PdControl for FakePd {
         _r: Request<pd::ListDiskShardsRequest>,
     ) -> Result<Response<pd::ListDiskShardsResponse>, Status> {
         Err(Status::unimplemented("list_disk_shards"))
+    }
+    async fn list_chunks(
+        &self,
+        _r: Request<pd::ListChunksRequest>,
+    ) -> Result<Response<pd::ListChunksResponse>, Status> {
+        Err(Status::unimplemented("list_chunks"))
+    }
+    async fn mark_disk_draining(
+        &self,
+        _r: Request<pd::MarkDiskDrainingRequest>,
+    ) -> Result<Response<pd::MarkDiskDrainingResponse>, Status> {
+        Err(Status::unimplemented("mark_disk_draining"))
+    }
+    async fn get_live_writers(
+        &self,
+        _r: Request<pd::GetLiveWritersRequest>,
+    ) -> Result<Response<pd::GetLiveWritersResponse>, Status> {
+        Err(Status::unimplemented("get_live_writers"))
     }
     async fn list_nodes(
         &self,
@@ -356,6 +361,12 @@ impl pd::pd_control_server::PdControl for FakePd {
     ) -> Result<Response<pd::ListBucketsResponse>, Status> {
         Err(Status::unimplemented("list_buckets"))
     }
+    async fn delete_bucket(
+        &self,
+        _r: Request<pd::DeleteBucketRequest>,
+    ) -> Result<Response<pd::DeleteBucketResponse>, Status> {
+        Err(Status::unimplemented("delete_bucket"))
+    }
     async fn put_config(
         &self,
         _r: Request<pd::PutConfigRequest>,
@@ -367,6 +378,18 @@ impl pd::pd_control_server::PdControl for FakePd {
         _r: Request<pd::GetConfigRequest>,
     ) -> Result<Response<pd::GetConfigResponse>, Status> {
         Err(Status::unimplemented("get_config"))
+    }
+    async fn put_credential(
+        &self,
+        _r: Request<pd::PutCredentialRequest>,
+    ) -> Result<Response<pd::PutCredentialResponse>, Status> {
+        Err(Status::unimplemented("put_credential"))
+    }
+    async fn list_credentials(
+        &self,
+        _r: Request<pd::ListCredentialsRequest>,
+    ) -> Result<Response<pd::ListCredentialsResponse>, Status> {
+        Err(Status::unimplemented("list_credentials"))
     }
     async fn create_partition(
         &self,
@@ -404,24 +427,6 @@ impl pd::pd_control_server::PdControl for FakePd {
     ) -> Result<Response<pd::CommitShardMappingResponse>, Status> {
         Err(Status::unimplemented("commit_shard_mapping"))
     }
-    async fn list_chunks(
-        &self,
-        _r: Request<pd::ListChunksRequest>,
-    ) -> Result<Response<pd::ListChunksResponse>, Status> {
-        Err(Status::unimplemented("list_chunks"))
-    }
-    async fn mark_disk_draining(
-        &self,
-        _r: Request<pd::MarkDiskDrainingRequest>,
-    ) -> Result<Response<pd::MarkDiskDrainingResponse>, Status> {
-        Err(Status::unimplemented("mark_disk_draining"))
-    }
-    async fn get_live_writers(
-        &self,
-        _r: Request<pd::GetLiveWritersRequest>,
-    ) -> Result<Response<pd::GetLiveWritersResponse>, Status> {
-        Err(Status::unimplemented("get_live_writers"))
-    }
     async fn report_shard_repair(
         &self,
         _r: Request<pd::ReportShardRepairRequest>,
@@ -440,161 +445,149 @@ impl pd::pd_control_server::PdControl for FakePd {
     ) -> Result<Response<pd::CommitShardRepairResponse>, Status> {
         Err(Status::unimplemented("commit_shard_repair"))
     }
-    async fn put_credential(
-        &self,
-        _r: Request<pd::PutCredentialRequest>,
-    ) -> Result<Response<pd::PutCredentialResponse>, Status> {
-        Err(Status::unimplemented("put_credential"))
-    }
-    async fn list_credentials(
-        &self,
-        _r: Request<pd::ListCredentialsRequest>,
-    ) -> Result<Response<pd::ListCredentialsResponse>, Status> {
-        Err(Status::unimplemented("list_credentials"))
-    }
-
-    async fn delete_bucket(
-        &self,
-        _r: Request<pd::DeleteBucketRequest>,
-    ) -> Result<Response<pd::DeleteBucketResponse>, Status> {
-        Err(Status::unimplemented("delete_bucket"))
-    }
 }
 
-async fn serve_meta(meta: FakeMeta) -> (String, JoinHandle<()>) {
+async fn serve_partition(p: FakePartition) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr").to_string();
     let handle = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(meta::meta_node_server::MetaNodeServer::new(meta))
+            .add_service(meta::meta_node_server::MetaNodeServer::new(p))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
     (addr, handle)
 }
 
-async fn serve_pd(pd: FakePd) -> (String, JoinHandle<()>) {
+async fn serve_pd_split(pd_: FakePdSplit) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr").to_string();
     let handle = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
-            .add_service(pd::pd_control_server::PdControlServer::new(pd))
+            .add_service(pd::pd_control_server::PdControlServer::new(pd_))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await;
     });
     (addr, handle)
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn put_and_head_route_through_pd_to_the_leader() {
-    let puts = Arc::new(AtomicU32::new(0));
-    let (meta_addr, _mh) = serve_meta(FakeMeta {
-        mode: MetaMode::Leader,
-        leader_addr: String::new(),
-        puts: puts.clone(),
+fn keys(list: &[&str]) -> Vec<Vec<u8>> {
+    list.iter().map(|k| k.as_bytes().to_vec()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn merged_list_walks_both_partitions_in_key_order() {
+    // Partition 1 holds keys below SPLIT, partition 2 the rest.
+    let (left_addr, _l) = serve_partition(FakePartition {
+        keys: keys(&["a", "c", "k"]),
+        leaks: false,
     })
     .await;
-    let routes = Arc::new(AtomicU32::new(0));
-    let (pd_addr, _ph) = serve_pd(FakePd {
-        meta_addr,
-        routes: routes.clone(),
+    let (right_addr, _r) = serve_partition(FakePartition {
+        keys: keys(&["n", "q", "z"]),
+        leaks: false,
+    })
+    .await;
+    let (pd_addr, _p) = serve_pd_split(FakePdSplit {
+        left_addr,
+        right_addr,
     })
     .await;
 
     let client = MetaClient::new(PdClient::connect(&[pd_addr]).expect("pd client"));
 
-    client
-        .put_object(epoch_client::PutObject {
-            bucket: BUCKET,
-            key: b"obj",
-            size: 3,
-            etag: [7; 16],
-            inline_data: b"abc".to_vec(),
-            slices: Vec::new(),
-            ts_millis: 100,
-            http: Default::default(),
-        })
+    let (rows, next) = client
+        .list_objects_merged(BUCKET, b"", b"", 100)
         .await
-        .expect("put");
-    assert_eq!(puts.load(Ordering::SeqCst), 1);
-
-    let head = client.head_object(BUCKET, b"obj").await.expect("head");
-    assert_eq!(head.expect("present").size, 3);
-
-    // The route was resolved once and cached: the second op does not re-hit PD.
+        .expect("merged list");
+    let got: Vec<String> = rows
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.key).into_owned())
+        .collect();
     assert_eq!(
-        routes.load(Ordering::SeqCst),
-        1,
-        "route cached after first resolve"
+        got,
+        vec!["a", "c", "k", "n", "q", "z"],
+        "the merged listing must walk both partitions in key order"
     );
+    assert!(next.is_none(), "a complete listing reports no resume token");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
-async fn not_leader_redirects_to_the_reported_leader() {
-    let puts = Arc::new(AtomicU32::new(0));
-    let (leader_addr, _lh) = serve_meta(FakeMeta {
-        mode: MetaMode::Leader,
-        leader_addr: String::new(),
-        puts: puts.clone(),
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn merged_list_resumes_across_the_partition_boundary() {
+    let (left_addr, _l) = serve_partition(FakePartition {
+        keys: keys(&["a", "c", "k"]),
+        leaks: false,
     })
     .await;
-    let (follower_addr, _fh) = serve_meta(FakeMeta {
-        mode: MetaMode::NotLeader,
-        leader_addr: leader_addr.clone(),
-        puts: Arc::new(AtomicU32::new(0)),
+    let (right_addr, _r) = serve_partition(FakePartition {
+        keys: keys(&["n", "q", "z"]),
+        leaks: false,
     })
     .await;
-    // PD points the route at the follower; the client must redirect to leader.
-    let (pd_addr, _ph) = serve_pd(FakePd {
-        meta_addr: follower_addr,
-        routes: Arc::new(AtomicU32::new(0)),
+    let (pd_addr, _p) = serve_pd_split(FakePdSplit {
+        left_addr,
+        right_addr,
     })
     .await;
+    let client = MetaClient::new(PdClient::connect(&[pd_addr]).expect("pd client"));
 
-    let client = MetaClient::new(PdClient::connect(&[pd_addr]).expect("pd"));
-    client
-        .put_object(epoch_client::PutObject {
-            bucket: BUCKET,
-            key: b"k",
-            size: 3,
-            etag: [7; 16],
-            inline_data: b"abc".to_vec(),
-            slices: Vec::new(),
-            ts_millis: 100,
-            http: Default::default(),
-        })
+    // First page of 4: spans the boundary (3 from partition 1, 1 from 2).
+    let (page1, token1) = client
+        .list_objects_merged(BUCKET, b"", b"", 4)
         .await
-        .expect("put after redirect");
-    assert_eq!(puts.load(Ordering::SeqCst), 1, "write landed on the leader");
+        .expect("page 1");
+    let got1: Vec<String> = page1
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.key).into_owned())
+        .collect();
+    assert_eq!(got1, vec!["a", "c", "k", "n"]);
+    let token1 = token1.expect("a truncated listing must carry a resume token");
+
+    // Second page resumes after the token and completes the listing.
+    let (page2, token2) = client
+        .list_objects_merged(BUCKET, b"", &token1, 4)
+        .await
+        .expect("page 2");
+    let got2: Vec<String> = page2
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.key).into_owned())
+        .collect();
+    assert_eq!(got2, vec!["q", "z"]);
+    assert!(token2.is_none());
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn partition_moved_re_resolves_via_pd() {
-    let (meta_addr, _mh) = serve_meta(FakeMeta {
-        mode: MetaMode::Moved,
-        leader_addr: String::new(),
-        puts: Arc::new(AtomicU32::new(0)),
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn merged_list_truncates_a_shared_cf_scan_at_the_partition_end() {
+    // Partition 1's scan leaks partition 2's keys (shared CF, not partition-
+    // bounded): the merger must truncate at the end key, or keys appear twice.
+    let (left_addr, _l) = serve_partition(FakePartition {
+        keys: keys(&["a", "c", "n", "q"]), // holds + leaks into partition 2's space
+        leaks: true,
     })
     .await;
-    let routes = Arc::new(AtomicU32::new(0));
-    let (pd_addr, _ph) = serve_pd(FakePd {
-        meta_addr,
-        routes: routes.clone(),
+    let (right_addr, _r) = serve_partition(FakePartition {
+        keys: keys(&["n", "q"]),
+        leaks: false,
     })
     .await;
+    let (pd_addr, _p) = serve_pd_split(FakePdSplit {
+        left_addr,
+        right_addr,
+    })
+    .await;
+    let client = MetaClient::new(PdClient::connect(&[pd_addr]).expect("pd client"));
 
-    let client = MetaClient::new(PdClient::connect(&[pd_addr]).expect("pd"));
-    let err = client
-        .head_object(BUCKET, b"k")
+    let (rows, _next) = client
+        .list_objects_merged(BUCKET, b"", b"", 100)
         .await
-        .expect_err("moved must exhaust");
-    assert!(
-        matches!(err, epoch_client::ClientError::NoLeader { .. }),
-        "got {err:?}"
-    );
-    // Each attempt re-resolved via PD (route evicted on every Moved).
-    assert!(
-        routes.load(Ordering::SeqCst) >= 2,
-        "re-resolved on PartitionMoved"
+        .expect("merged list");
+    let got: Vec<String> = rows
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.key).into_owned())
+        .collect();
+    assert_eq!(
+        got,
+        vec!["a", "c", "n", "q"],
+        "each key must appear exactly once — the boundary truncation must cut the leak"
     );
 }

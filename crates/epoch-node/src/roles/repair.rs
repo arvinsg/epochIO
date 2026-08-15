@@ -261,7 +261,13 @@ const INSPECT_PAGE: u32 = 256;
 
 #[async_trait]
 impl epoch_worker::JobExpander for InspectExpander {
-    async fn expand(&self, _resume_from: u64) -> Result<Vec<Arc<dyn Subtask>>, SubtaskError> {
+    /// Expands the round into one [`InspectSubtask`] per committed chunk, paging
+    /// PD's `ListChunks`. `resume_from` is the count of chunks already scanned in
+    /// a prior (crashed) attempt — the watermark `run_job` checkpoints — so a
+    /// reassigned coordinator resumes *past* them instead of restarting from
+    /// chunk 0 (01 §6.3: PD 记 checkpoint 续扫). Without this a long round that
+    /// loses its coordinator near the end could never reach the tail chunks.
+    async fn expand(&self, resume_from: u64) -> Result<Vec<Arc<dyn Subtask>>, SubtaskError> {
         let (_nodes, disks) = self
             .pd
             .list_nodes()
@@ -269,6 +275,9 @@ impl epoch_worker::JobExpander for InspectExpander {
             .map_err(|e| SubtaskError::Failed(format!("list_nodes: {e}")))?;
         let mut subtasks: Vec<Arc<dyn Subtask>> = Vec::new();
         let mut after = ChunkId::new(0);
+        // Skip the first `resume_from` chunks (already scanned). Chunk ids are
+        // monotonic, so counting off the page stream is a stable resume cursor.
+        let mut skipped = 0u64;
         loop {
             let page = self
                 .pd
@@ -281,6 +290,10 @@ impl epoch_worker::JobExpander for InspectExpander {
             for view in &page {
                 let chunk_id = ChunkId::new(view.chunk_id);
                 after = chunk_id;
+                if skipped < resume_from {
+                    skipped += 1;
+                    continue;
+                }
                 let layout = chunk_layout_from_pd(&self.pd, chunk_id, &disks).await?;
                 subtasks.push(Arc::new(InspectSubtask::new(
                     Arc::clone(&self.backend),
@@ -480,6 +493,17 @@ struct PdRepairBackend {
 
 #[async_trait]
 impl RepairBackend for PdRepairBackend {
+    async fn seal_chunk(&self, chunk_id: ChunkId) -> Result<(), SubtaskError> {
+        // 01 §6.3 不变量 4 (Seal 先行): fence the chunk before the rebuild reads
+        // a single survivor, so the blob set enumerated at expand time is closed.
+        // `SealChunk` is idempotent at PD and on the store, so a retried subtask
+        // re-sealing is a no-op.
+        self.pd
+            .seal_chunk(chunk_id)
+            .await
+            .map_err(|e| SubtaskError::NotReady(format!("seal_chunk: {e}")))
+    }
+
     async fn read_shard(
         &self,
         node: NodeId,

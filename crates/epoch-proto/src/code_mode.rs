@@ -66,6 +66,8 @@ pub struct CodeMode {
     pub stripe_size: u32,
     /// Blob size in bytes (the object-cut unit).
     pub blob_size: u64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub write_quorum: Option<u8>,
 }
 
 impl CodeMode {
@@ -74,6 +76,18 @@ impl CodeMode {
     #[must_use]
     pub fn shards_total(self) -> u16 {
         u16::from(self.data) + u16::from(self.parity)
+    }
+    #[must_use]
+    pub fn total(self) -> usize {
+        usize::from(self.data) + usize::from(self.parity)
+    }
+    #[must_use]
+    pub fn write_quorum(self) -> u8 {
+        self.write_quorum.unwrap_or_else(|| {
+            let total = u16::from(self.data) + u16::from(self.parity);
+            let tolerate = (self.parity / 2).max(1);
+            (total - u16::from(tolerate)) as u8
+        })
     }
 }
 
@@ -89,6 +103,7 @@ mod tests {
             parity: 4,
             stripe_size: 1 << 20,
             blob_size: 32 << 20,
+            write_quorum: None,
         };
         assert_eq!(mode.shards_total(), 16);
     }
@@ -102,6 +117,7 @@ mod tests {
             parity: 2,
             stripe_size: 1 << 20,
             blob_size: 32 << 20,
+            write_quorum: None,
         };
         let json = serde_json::to_string(&mode).expect("serialize");
         let back: CodeMode = serde_json::from_str(&json).expect("deserialize");

@@ -39,6 +39,9 @@ pub struct CodeMode {
     pub stripe_size: usize,
     /// Blob size in bytes (the object-cut unit; 32 MiB by default).
     pub blob_size: usize,
+    /// Write quorum (10 §3 缺口 C): shards that must commit for a durable write.
+    /// `None` → derived as `total − max(1, parity/2)` (the legacy formula).
+    pub write_quorum: Option<usize>,
 }
 
 impl CodeMode {
@@ -69,7 +72,15 @@ impl CodeMode {
             parity,
             stripe_size,
             blob_size,
+            write_quorum: None,
         })
+    }
+
+    /// Sets an explicit write quorum (10 §3 缺口 C). Builder-style.
+    #[must_use]
+    pub fn with_write_quorum(mut self, quorum: usize) -> Self {
+        self.write_quorum = Some(quorum);
+        self
     }
 
     /// Total shards per stripe (`data + parity`).
@@ -92,10 +103,14 @@ impl CodeMode {
     /// `t = max(1, parity / 2)`, so `t` failures are tolerated while `parity − t`
     /// slack remains for later repair. Design: docs/design/99-open-questions.md
     /// Q5 (v0.13).
+    /// The effective write quorum: the explicit override when set (10 §3 缺口 C),
+    /// else the legacy derived formula (`total − max(1, parity/2)`).
     #[must_use]
     pub fn write_quorum(&self) -> usize {
-        let tolerate = (self.parity / 2).max(1);
-        self.total() - tolerate
+        self.write_quorum.unwrap_or_else(|| {
+            let tolerate = (self.parity / 2).max(1);
+            self.total() - tolerate
+        })
     }
 }
 
@@ -120,6 +135,11 @@ pub struct BlobDesc {
     pub len: usize,
     /// The chunk (and its shard endpoints) the blob was written to.
     pub chunk: ChunkPlacement,
+    /// The code mode this blob's chunk was written with (10 §3 缺口 B). It may
+    /// differ from `ObjectLayout.code` when chunks of different modes mix in one
+    /// object, or when the configured mode changed after the write — the read
+    /// path reconstructs with *this*, not the object-level default.
+    pub code: CodeMode,
 }
 
 /// The full read-back directory for one object: everything a GET needs without

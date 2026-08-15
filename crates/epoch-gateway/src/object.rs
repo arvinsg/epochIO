@@ -102,6 +102,49 @@ impl From<s3s::dto::Range> for RangeSpec {
     }
 }
 
+/// One end of a copy: a key in a bucket, plus which namespace that bucket uses.
+///
+/// Carrying the namespace flag with the address is what keeps a copy from having
+/// to thread two booleans through in the right order (the mistake that would
+/// silently read a hier path as a flat key).
+#[derive(Debug, Clone, Copy)]
+pub struct Located<'a> {
+    /// The bucket id.
+    pub bucket: u64,
+    /// The object key (a path, for a hier bucket).
+    pub key: &'a [u8],
+    /// Whether the bucket uses the hierarchical namespace.
+    pub hier: bool,
+}
+
+impl<'a> Located<'a> {
+    /// An address in a flat bucket.
+    #[must_use]
+    pub fn flat(bucket: u64, key: &'a [u8]) -> Self {
+        Self {
+            bucket,
+            key,
+            hier: false,
+        }
+    }
+
+    /// An address in a hierarchical bucket.
+    #[must_use]
+    pub fn hier(bucket: u64, key: &'a [u8]) -> Self {
+        Self {
+            bucket,
+            key,
+            hier: true,
+        }
+    }
+
+    /// An address whose namespace is chosen by `hier`.
+    #[must_use]
+    pub fn new(bucket: u64, key: &'a [u8], hier: bool) -> Self {
+        Self { bucket, key, hier }
+    }
+}
+
 /// The result of a PUT: the object's S3 ETag digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PutResult {
@@ -308,36 +351,63 @@ impl<S: TokenSource> ObjectService<S> {
             None => None,
         };
 
-        if head.inline {
-            let body = match window {
+        let body = self
+            .serve_body(
+                head.inline,
+                meta.inline_data,
+                &meta.slices,
+                head.size,
+                window,
+            )
+            .await?;
+        Ok(Some(FetchedObject {
+            body,
+            etag,
+            size: head.size,
+            range: window,
+            http,
+            mtime: head.mtime,
+        }))
+    }
+
+    /// Serves an object's bytes from its stored content: inline bytes sliced in
+    /// memory, or the EC slice list reconstructed through the read path. `window`
+    /// (already resolved against `size`) narrows an EC read to the blobs it
+    /// touches.
+    ///
+    /// Both namespaces funnel through here, so a hier file body and a flat object
+    /// body can never disagree about integrity checks, range trimming, or
+    /// heal-on-read reporting.
+    async fn serve_body(
+        &self,
+        inline: bool,
+        inline_data: Vec<u8>,
+        slices: &[epoch_proto::grpc::meta::SliceRef],
+        size: u64,
+        window: Option<range::ByteRange>,
+    ) -> Result<Vec<u8>, GatewayError> {
+        if inline {
+            return match window {
                 // Inline bodies are already in memory: slice directly.
                 Some(w) => {
                     let start = usize::try_from(w.start).unwrap_or(usize::MAX);
                     let end = usize::try_from(w.end).unwrap_or(usize::MAX);
-                    meta.inline_data
+                    Ok(inline_data
                         .get(start..=end)
-                        .ok_or(GatewayError::RangeNotSatisfiable(head.size))?
-                        .to_vec()
+                        .ok_or(GatewayError::RangeNotSatisfiable(size))?
+                        .to_vec())
                 }
-                None => meta.inline_data,
+                None => Ok(inline_data),
             };
-            return Ok(Some(FetchedObject {
-                body,
-                etag,
-                size: head.size,
-                range: window,
-                http,
-                mtime: head.mtime,
-            }));
         }
 
-        let layout = slices_to_layout(&meta.slices, self.code, head.size, &self.chunk_map).await?;
+        let layout = slices_to_layout(slices, self.code, size, &self.chunk_map).await?;
         // A ranged read narrows the layout to the overlapping blobs; a full read
         // takes it as-is.
         let (read_layout, trim) = match window {
             Some(w) => {
                 let plan =
-                    range::plan(&layout, w).ok_or(GatewayError::RangeNotSatisfiable(head.size))?;
+                    range::plan(&layout, w).ok_or(GatewayError::RangeNotSatisfiable(size))?;
                 (
                     crate::code::ObjectLayout {
                         // The narrowed layout's `size` is the bytes it spans, so the
@@ -358,22 +428,14 @@ impl<S: TokenSource> ObjectService<S> {
         if !read.heals.is_empty() {
             self.spawn_heal_reports(read.heals);
         }
-        let body = match trim {
-            Some((skip, take)) => read
+        match trim {
+            Some((skip, take)) => Ok(read
                 .bytes
                 .get(skip..skip + take)
-                .ok_or(GatewayError::RangeNotSatisfiable(head.size))?
-                .to_vec(),
-            None => read.bytes,
-        };
-        Ok(Some(FetchedObject {
-            body,
-            etag,
-            size: head.size,
-            range: window,
-            http,
-            mtime: head.mtime,
-        }))
+                .ok_or(GatewayError::RangeNotSatisfiable(size))?
+                .to_vec()),
+            None => Ok(read.bytes),
+        }
     }
 
     /// Fires the heal-on-read reports to PD in a detached task so they never
@@ -395,6 +457,138 @@ impl<S: TokenSource> ObjectService<S> {
                 }
             }
         });
+    }
+
+    /// Writes a file into a **hierarchical** bucket (03 §6.4): path-walk with
+    /// implicit mkdir, then the same body decision a flat PUT makes — inline when
+    /// `size ≤ inline_threshold`, else EC through the shared pipeline. Returns the
+    /// file's S3 ETag.
+    ///
+    /// A hier body is no longer inline-only: a checkpoint written into a hier
+    /// bucket takes the EC path exactly as it would in a flat bucket, which is the
+    /// whole point of the hier namespace (atomic same-dir rename over large
+    /// files). The inline-guard downgrade (03 §4.3) applies here too.
+    ///
+    /// # Errors
+    ///
+    /// [`GatewayError::DirFileConflict`] on a dir/file clash; otherwise as
+    /// [`put_object`](Self::put_object).
+    pub async fn put_hier(
+        &self,
+        bucket: u64,
+        key: &[u8],
+        body: &[u8],
+        inline_threshold: u64,
+        ts_millis: i64,
+        http: epoch_client::HttpMeta,
+    ) -> Result<PutResult, GatewayError> {
+        let etag = etag::object_etag(body);
+        let size = body.len() as u64;
+        let leaf = crate::s3compat::resolve_for_write(&self.meta, bucket, key, ts_millis).await?;
+
+        if inline_threshold > 0 && size <= inline_threshold {
+            match crate::s3compat::commit_write(
+                &self.meta,
+                bucket,
+                &leaf,
+                size,
+                etag,
+                body.to_vec(),
+                Vec::new(),
+                ts_millis,
+                http.clone(),
+            )
+            .await
+            {
+                Ok(()) => return Ok(PutResult { etag }),
+                // The partition's inline guard refused it (03 §4.3): fall through
+                // to the EC path (transparent downgrade, as in the flat path).
+                Err(e) if is_inline_guard_downgrade(&e) => {
+                    tracing::debug!("inline hier PUT rejected by guard; downgrading to EC");
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // EC path: reserve buffer budget, encode+write, commit the slice list.
+        let _permit = self.admission.acquire(body.len()).await?;
+        let layout = self.gateway.put_object(body).await?;
+        let slices = layout_to_slices(&layout);
+        crate::s3compat::commit_write(
+            &self.meta,
+            bucket,
+            &leaf,
+            size,
+            etag,
+            Vec::new(),
+            slices,
+            ts_millis,
+            http,
+        )
+        .await?;
+        // The metadata now references these blobs: resolve them off the writer's
+        // in-flight set so the GC watermark advances past them (Q27).
+        self.gateway.resolve_layout(&layout);
+        Ok(PutResult { etag })
+    }
+
+    /// Reads a file from a **hierarchical** bucket, with an optional S3 `Range`
+    /// header. `None` when the path resolves to nothing or to a directory.
+    ///
+    /// Inline and EC bodies are both served (the EC form through the same
+    /// reconstruct + heal-on-read path a flat GET uses), and a ranged read of an
+    /// EC file fetches only the blobs the window touches.
+    ///
+    /// # Errors
+    ///
+    /// As [`get_object_maybe_ranged`](Self::get_object_maybe_ranged).
+    pub async fn get_hier_maybe_ranged(
+        &self,
+        bucket: u64,
+        key: &[u8],
+        range: Option<s3s::dto::Range>,
+    ) -> Result<Option<FetchedObject>, GatewayError> {
+        let Some(file) = crate::s3compat::resolve_for_read(&self.meta, bucket, key).await? else {
+            return Ok(None);
+        };
+        let head = file.head;
+        let window = match range.map(RangeSpec::from) {
+            Some(spec) => Some(
+                range::resolve(head.size, spec.first, spec.last, spec.suffix)
+                    .map_err(|_| GatewayError::RangeNotSatisfiable(head.size))?,
+            ),
+            None => None,
+        };
+        let body = self
+            .serve_body(
+                head.inline,
+                file.inline_data,
+                &file.slices,
+                head.size,
+                window,
+            )
+            .await?;
+        Ok(Some(FetchedObject {
+            body,
+            etag: to_etag(&head.etag),
+            size: head.size,
+            range: window,
+            http: epoch_client::HttpMeta::from_view(&head),
+            mtime: head.mtime,
+        }))
+    }
+
+    /// Reads a whole file from a hierarchical bucket (the unranged form).
+    ///
+    /// # Errors
+    ///
+    /// As [`get_hier_maybe_ranged`](Self::get_hier_maybe_ranged).
+    pub async fn get_hier(
+        &self,
+        bucket: u64,
+        key: &[u8],
+    ) -> Result<Option<FetchedObject>, GatewayError> {
+        self.get_hier_maybe_ranged(bucket, key, None).await
     }
 
     /// Deletes an object (idempotent).
@@ -435,21 +629,64 @@ impl<S: TokenSource> ObjectService<S> {
         inline_threshold: u64,
         ts_millis: i64,
     ) -> Result<Option<PutResult>, GatewayError> {
-        let Some(src) = self.get_object(src_bucket, src_key).await? else {
+        self.copy_between(
+            Located::flat(src_bucket, src_key),
+            Located::flat(dst_bucket, dst_key),
+            inline_threshold,
+            ts_millis,
+        )
+        .await
+    }
+
+    /// Server-side copy between any two namespaces (flat→flat, flat→hier,
+    /// hier→flat, hier→hier). Physical re-encode, as
+    /// [`copy_object`](Self::copy_object) documents; the only difference is which
+    /// read and write path each end uses, so a hier bucket is no longer excluded
+    /// from `CopyObject`.
+    ///
+    /// Returns `None` if the source is absent.
+    ///
+    /// # Errors
+    ///
+    /// [`GatewayError`] for a read/reconstruct or write/commit failure.
+    pub async fn copy_between(
+        &self,
+        src: Located<'_>,
+        dst: Located<'_>,
+        inline_threshold: u64,
+        ts_millis: i64,
+    ) -> Result<Option<PutResult>, GatewayError> {
+        let fetched = if src.hier {
+            self.get_hier(src.bucket, src.key).await?
+        } else {
+            self.get_object(src.bucket, src.key).await?
+        };
+        let Some(fetched) = fetched else {
             return Ok(None);
         };
         // S3's default metadata directive is COPY: the destination inherits the
         // source's Content-Type and user metadata.
-        let result = self
-            .put_object(
-                dst_bucket,
-                dst_key,
-                &src.body,
+        let result = if dst.hier {
+            self.put_hier(
+                dst.bucket,
+                dst.key,
+                &fetched.body,
                 inline_threshold,
                 ts_millis,
-                src.http,
+                fetched.http,
             )
-            .await?;
+            .await?
+        } else {
+            self.put_object(
+                dst.bucket,
+                dst.key,
+                &fetched.body,
+                inline_threshold,
+                ts_millis,
+                fetched.http,
+            )
+            .await?
+        };
         Ok(Some(result))
     }
 
@@ -569,6 +806,13 @@ impl<S: TokenSource> ObjectService<S> {
 /// (`resource_exhausted`, 03 §4.3) — the gateway retries the write as EC.
 fn is_inline_downgrade(err: &ClientError) -> bool {
     matches!(err, ClientError::Rpc { code, .. } if code == "ResourceExhausted")
+}
+
+/// Whether a *gateway* error is the inline-guard downgrade signal (the hier write
+/// path's equivalent of [`is_inline_downgrade`], typed rather than matched on a
+/// rendered message).
+fn is_inline_guard_downgrade(err: &GatewayError) -> bool {
+    matches!(err, GatewayError::MetaInlineGuard(_))
 }
 
 /// Decodes a wire etag field (16 bytes; a malformed/absent value → zeros).

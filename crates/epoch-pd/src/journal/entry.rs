@@ -66,6 +66,10 @@ pub enum PdEntry {
     SealChunk(SealChunk),
     /// Create a bucket (idempotent by name; allocates a never-reused id).
     CreateBucket(CreateBucket),
+    /// Tombstone a bucket for deletion (99-Q15): flips it to `Deleting`.
+    TombstoneBucket(crate::bucket::TombstoneBucket),
+    /// Purge a tombstoned bucket's identity record after its records are gone.
+    PurgeBucket(crate::bucket::PurgeBucket),
     /// Create a MetaNode range partition (01 §5; peers chosen by the leader).
     CreatePartition(CreatePartition),
     /// Split a MetaNode range partition at a boundary (03 §2; route-table
@@ -135,6 +139,12 @@ pub enum ApplyResult {
     /// A bucket was created (or reclaimed by name); carries its id.
     BucketCreated {
         /// The assigned (never-reused) bucket id.
+        bucket_id: BucketId,
+    },
+    /// A bucket was tombstoned or purged; carries its id. `Deleted` covers both
+    /// the tombstone (write-refusing) and the final purge steps.
+    BucketDeleted {
+        /// The bucket's id.
         bucket_id: BucketId,
     },
     /// A partition was created (or an exact-range retry reclaimed); carries its id.

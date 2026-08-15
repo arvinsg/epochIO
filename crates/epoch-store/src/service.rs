@@ -434,7 +434,15 @@ impl StorageEngine {
         blob_id: BlobId,
     ) -> Result<Option<Vec<u8>>, EpochError> {
         let inner = Arc::clone(&self.inner);
-        run_blocking(move || inner.read_blocking(extent_id, blob_id)).await
+        let start = std::time::Instant::now();
+        let out = run_blocking(move || inner.read_blocking(extent_id, blob_id)).await;
+        // Foreground read metering (08 §5.1): the read bytes + latency feed the
+        // same store IO families the write path already records into.
+        if let Ok(Some(body)) = &out {
+            crate::metrics::record_io(IoClass::Foreground, "read", body.len() as u64);
+        }
+        crate::metrics::record_io_duration("read", start.elapsed().as_secs_f64());
+        out
     }
 
     /// Reads a blob shard by `shard` slot: resolves the shard's current extent
@@ -452,7 +460,13 @@ impl StorageEngine {
         blob_id: BlobId,
     ) -> Result<Option<Vec<u8>>, EpochError> {
         let inner = Arc::clone(&self.inner);
-        run_blocking(move || inner.read_shard_blocking(shard, blob_id)).await
+        let start = std::time::Instant::now();
+        let out = run_blocking(move || inner.read_shard_blocking(shard, blob_id)).await;
+        if let Ok(Some(body)) = &out {
+            crate::metrics::record_io(IoClass::Foreground, "read", body.len() as u64);
+        }
+        crate::metrics::record_io_duration("read", start.elapsed().as_secs_f64());
+        out
     }
 
     /// Lists the live (non-tombstoned) blob ids in `extent_id`, ascending — the

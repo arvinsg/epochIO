@@ -561,7 +561,7 @@ tbody tr:hover .row-act { opacity: 1; }
           <input id="browser-prefix" placeholder="按前缀过滤…" value="">
         </div>
         <div class="spacer"></div>
-        <button class="control" id="browser-download" disabled title="下载经 302 转 gateway，凭证机制待定（08 §4）">下载</button>
+        <button class="control" id="browser-download" disabled title="经 302 转 gateway 下载选中对象（08 §4）">下载</button>
         <button class="control primary" disabled title="小文件上传代理待后续">上传</button>
       </div>
       <table>
@@ -814,10 +814,10 @@ tbody tr:hover .row-act { opacity: 1; }
   <!-- ══ 3c. 管理 · Chunk ════════════════════════════════════════════ -->
   <section class="view" id="view-admin-chunks">
     <div class="grid-4">
-      <div class="card"><div class="tile-label">Chunk 总数</div><div class="tile-value num">4,182</div><div class="tile-foot">EC 12+4</div></div>
-      <div class="card"><div class="tile-label">Writable</div><div class="tile-value num">312</div><div class="tile-foot">可写集合已发布</div></div>
-      <div class="card"><div class="tile-label">Sealed</div><div class="tile-value num">3,864</div><div class="tile-foot">只读，可 compact</div></div>
-      <div class="card"><div class="tile-label">低于 quorum</div><div class="tile-value num">0</div><div class="tile-foot">InspectRound 兜底</div></div>
+      <div class="card"><div class="tile-label">Chunk 总数</div><div class="tile-value num" id="chunk-total">—</div><div class="tile-foot">EC 12+4</div></div>
+      <div class="card"><div class="tile-label">Writable</div><div class="tile-value num" id="chunk-writable">—</div><div class="tile-foot">可写集合已发布</div></div>
+      <div class="card"><div class="tile-label">Sealed</div><div class="tile-value num" id="chunk-sealed">—</div><div class="tile-foot">只读，可 compact</div></div>
+      <div class="card"><div class="tile-label">低于 quorum</div><div class="tile-value num" id="chunk-broken">—</div><div class="tile-foot">InspectRound 兜底</div></div>
     </div>
     <div class="card flush">
       <div class="card-head">
@@ -901,7 +901,7 @@ tbody tr:hover .row-act { opacity: 1; }
   </section>
 
   <p class="footnote">
-    静态 mockup，数据为示意值。设计见 <code>docs/design/08-web-console.md</code>。
+    设计见 <code>docs/design/08-web-console.md</code>。
     三段结构：<b>概览</b>（数与态）· <b>使用</b>（业务视角）· <b>管理</b>（admin）。
     速率与趋势指标一律走 <code>/metrics</code> + Grafana，PD 不承担时序存储。
   </p>
@@ -939,8 +939,15 @@ function hideLogin() { document.getElementById('login-overlay').hidden = true; }
     if (!resp.ok) { errEl.textContent = '登录失败：凭证无效'; errEl.hidden = false; return; }
     hideLogin();
   });
-  // On load, probe the session; unauthenticated → show login.
-  api('whoami').catch(() => {});
+  // On load, probe the session; unauthenticated → show login. On success render
+  // the identity into the role pill (replacing the placeholder).
+  api('whoami').then(w => {
+    const pill = document.getElementById('role-pill');
+    if (pill && w && w.access_key) {
+      pill.innerHTML = pill.innerHTML.replace(/admin · root/, '');
+      pill.insertAdjacentText('beforeend', `${w.role} · ${w.access_key}`);
+    }
+  }).catch(() => {});
 })();
 
 /* ═══ overview data binding (W3) ════════════════════════════════════════
@@ -951,6 +958,10 @@ function hideLogin() { document.getElementById('login-overlay').hidden = true; }
    "等待心跳" rather than a misleading 0. Latest real overview is cached in
    `OV` so chart() (below) can draw from it. */
 let OV = null;
+// Real-data caches for the two meta-node charts (filled by loadMetaNodes /
+// loadAdminPartitions); empty until the first successful fetch.
+let META_ROWS = null;
+let PARTITION_ROWS = null;
 const setText = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
 const compactNum = v => v >= 1e9 ? (v / 1e9).toFixed(2) + ' B' : v >= 1e6 ? (v / 1e6).toFixed(2) + ' M'
   : v >= 1e3 ? (v / 1e3).toFixed(1) + ' K' : String(v);
@@ -1010,7 +1021,39 @@ async function loadOverview() {
   setText('live-repairing', live.repairing_disks);
   setText('live-delq', live.delq_depth == null ? '—' : compactNum(live.delq_depth));
 
+  renderAttention(ov);
+
   charts();                                      // redraw overview charts from OV
+}
+
+/* "需要关注" (08 §3): derive the severity-ordered anomaly list from the live
+   overview state — never a static table. Each row carries a jump target to the
+   page that owns the anomaly. */
+function renderAttention(ov) {
+  const rows = [];
+  const n = ov.nodes.by_status, d = ov.disks.by_status, c = ov.chunks;
+  if (d.repairing > 0) rows.push({ sev: 2, st: 'serious', stl: '盘修复中',
+    obj: `${d.repairing} 块盘`, d: 'RepairDisk 进行中，MTTR 受 Repair 类带宽约束', view: 'nodes-data' });
+  if (n.lost > 0) rows.push({ sev: 2, st: 'critical', stl: '节点失联',
+    obj: `${n.lost} 节点`, d: '心跳超 Lost 阈值——检查网络/进程', view: 'nodes-data' });
+  if (c.broken > 0) rows.push({ sev: 2, st: 'critical', stl: '低于 quorum',
+    obj: `${c.broken} chunk`, d: '副本数不足，InspectRound 兜底巡检会发现', view: 'admin-chunks' });
+  if (n.offline > 0) rows.push({ sev: 1, st: 'warning', stl: '心跳延迟',
+    obj: `${n.offline} 节点`, d: '心跳超 Offline 阈值——网络或负载抖动', view: 'nodes-data' });
+  if (d.draining > 0) rows.push({ sev: 1, st: 'warning', stl: '下线中',
+    obj: `${d.draining} 块盘`, d: 'DropDisk 迁移进行中', view: 'nodes-data' });
+  if (c.migrating > 0) rows.push({ sev: 1, st: 'warning', stl: '分区迁移中',
+    obj: `${c.migrating} chunk`, d: '调度器正在迁移', view: 'admin-partitions' });
+  const host = document.getElementById('tbody-attention');
+  if (!host) return;
+  host.innerHTML = rows.length
+    ? rows.sort((a, b) => b.sev - a.sev).map(r => `<tr>
+        <td>${st(r.st, r.stl)}</td>
+        <td class="id">${r.obj}</td><td>${r.d}</td>
+        <td class="r"><button class="control row-act" data-goto="${r.view}">查看</button></td></tr>`).join('')
+    : '<tr><td colspan="4" class="sub" style="padding:16px">集群健康，无异常项</td></tr>';
+  host.querySelectorAll('[data-goto]').forEach(b =>
+    b.addEventListener('click', () => { const l = document.querySelector(`[data-view="${b.dataset.goto}"]`); if (l) l.click(); }));
 }
 // Poll while the overview view is on-screen (5s).
 setInterval(() => {
@@ -1127,193 +1170,6 @@ function stateChart(host, { groups, cats }) {
   host.appendChild(svg); const tip = tooltip(host);
 }
 
-/* ═══ demo data ═══════════════════════════════════════════════════════ */
-document.getElementById('kpi-health').innerHTML = ICON.warning + '<b>降级</b>';
-
-const NODES = [
-  { id: 'node-1', addr: '10.0.1.11', roles: 'pd · data · gateway', az: 'az-a / r1', st: 'good', stl: 'Live', fill: 71, disks: '8/8', ext: 62, hb: '1s' },
-  { id: 'node-2', addr: '10.0.1.12', roles: 'pd · data · gateway', az: 'az-a / r2', st: 'good', stl: 'Live', fill: 68, disks: '8/8', ext: 58, hb: '2s' },
-  { id: 'node-3', addr: '10.0.2.11', roles: 'data', az: 'az-b / r1', st: 'serious', stl: '盘修复中', fill: 88, disks: '7/8', ext: 11, hb: '1s' },
-  { id: 'node-4', addr: '10.0.2.12', roles: 'pd · data · meta', az: 'az-b / r2', st: 'good', stl: 'Live', fill: 64, disks: '8/8', ext: 71, hb: '3s' },
-  { id: 'node-5', addr: '10.0.3.11', roles: 'data · meta', az: 'az-c / r1', st: 'warning', stl: '心跳延迟', fill: 66, disks: '8/8', ext: 55, hb: '24s' },
-  { id: 'node-6', addr: '10.0.3.12', roles: 'data · meta', az: 'az-c / r2', st: 'good', stl: 'Live', fill: 62, disks: '8/8', ext: 77, hb: '1s' },
-];
-
-document.getElementById('tbody-attention').innerHTML = [
-  { st: 'serious', stl: 'Repairing', obj: 'disk-23 @ node-3', d: '盘故障已确认，RepairDisk job-1041 进行中（46%，MTTR 预估 38min）', act: '查看任务' },
-  { st: 'warning', stl: '心跳延迟', obj: 'node-5', d: '24s 未上报（Offline 阈值 30s）——网络或负载抖动', act: '查看节点' },
-  { st: 'warning', stl: '待分裂', obj: 'partition-1', d: 'total_bytes 4.62 GiB 超阈值 4 GiB，调度器已排队 split', act: '查看分区' },
-  { st: 'warning', stl: '水位高', obj: 'node-3', d: '最满盘 88%，超过 85% 建议扩容或 Balance', act: '查看磁盘' },
-].map(r => `<tr>
-  <td>${st(r.st, r.stl)}</td>
-  <td class="id">${r.obj}</td><td>${r.d}</td>
-  <td class="r"><button class="control row-act">${r.act}</button></td></tr>`).join('');
-
-const OBJECTS = [
-  { d: 1, n: '000119.tar', s: '64.0 MiB', cls: 'EC 12+4', tag: 'e91b7c04aa13f882-2', t: '08-02 09:38' },
-  { d: 1, n: '000120.tar', s: '64.0 MiB', cls: 'EC 12+4', tag: '77c2ad91be40f31a-2', t: '08-02 09:39' },
-  { d: 1, n: '000121.tar', s: '64.0 MiB', cls: 'EC 12+4', tag: '02be91cf7ad3e114-2', t: '08-02 09:40' },
-  { d: 1, n: '000122.tar', s: '64.0 MiB', cls: 'EC 12+4', tag: 'bb41e07c9a2df156-2', t: '08-02 09:40' },
-  { d: 1, n: '000123.tar', s: '64.0 MiB', cls: 'EC 12+4', tag: 'a3f1c8de9b204f7a-2', t: '08-02 09:41' },
-  { d: 0, n: 'manifest/', s: '—', cls: '—', tag: '—', t: '—' },
-  { d: 1, n: 'index.json', s: '84.2 KiB', cls: 'inline', tag: 'd1094c6b7fe28a30', t: '08-02 09:31' },
-  { d: 1, n: 'README.md', s: '2.1 KiB', cls: 'inline', tag: '5f0c81ab29d34e77', t: '08-01 22:10' },
-];
-document.getElementById('tbody-objects').innerHTML = OBJECTS.map(o => `<tr>
-  <td><span class="fname">${o.d ? FILE : DIR}<a>${o.n}</a></span></td>
-  <td class="r">${o.s}</td>
-  <td>${o.cls === 'inline' ? '<span class="pill">inline</span>' : o.cls === '—' ? '—' : o.cls}</td>
-  <td class="mono" style="color:var(--text-muted)">${o.tag}</td>
-  <td class="r num">${o.t}</td>
-  <td class="r">${o.d ? '<button class="control row-act">下载</button>' : ''}</td></tr>`).join('');
-
-document.getElementById('tbody-keys').innerHTML = [
-  { ak: 'AKIAEP7QK2M4XLZV9T3B', b: 'datasets-imagenet, ckpt-llm', t: '2026-06-14', st: 'good', stl: '启用' },
-  { ak: 'AKIAEP2W8N6RJHQY5C1D', b: 'datasets-imagenet（只读）', t: '2026-07-02', st: 'good', stl: '启用' },
-  { ak: 'AKIAEPX4B9V7TSDM0K6F', b: 'scratch', t: '2026-07-28', st: 'muted', stl: '已停用' },
-].map(k => `<tr>
-  <td class="id mono">${k.ak}</td>
-  <td><span class="masked mono">••••••••••••••••</span></td>
-  <td>${k.b}</td><td class="num">${k.t}</td>
-  <td class="r">${st(k.st, k.stl)} <button class="control row-act danger" style="margin-left:8px">停用</button></td></tr>`).join('');
-
-const BUCKETS = [
-  { n: 'datasets-imagenet', ns: 'flat', obj: 12480, use: 781, pct: 100, t: '2026-05-02', cm: 'EC 12+4', il: '128 KiB' },
-  { n: 'ckpt-llm', ns: 'hier', obj: 3162, use: 604, pct: 77, t: '2026-05-11', cm: 'EC 12+4', il: '128 KiB' },
-  { n: 'datasets-laion', ns: 'flat', obj: 984000, use: 412, pct: 53, t: '2026-05-20', cm: 'EC 12+4', il: '64 KiB' },
-  { n: 'features-v3', ns: 'flat', obj: 41200000, use: 210, pct: 27, t: '2026-06-08', cm: 'EC 6+3', il: '256 KiB' },
-  { n: 'scratch', ns: 'flat', obj: 8210, use: 96, pct: 12, t: '2026-06-19', cm: 'EC 6+3', il: '128 KiB' },
-  { n: 'manifests', ns: 'flat', obj: 620000, use: 18, pct: 3, t: '2026-07-01', cm: 'Replica3', il: '512 KiB' },
-];
-const compact = v => v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'K' : v;
-document.getElementById('tbody-usage').innerHTML = BUCKETS.map(b => `<tr>
-  <td class="id">${b.n}</td><td><span class="pill">${b.ns}</span></td>
-  <td class="r">${compact(b.obj)}</td><td class="r">${b.use} GiB</td>
-  <td>${meter(b.pct)}</td><td class="r num">${b.t}</td></tr>`).join('');
-document.getElementById('tbody-admin-buckets').innerHTML = BUCKETS.map(b => `<tr>
-  <td class="id">${b.n}<div class="sub num">创建于 ${b.t}</div></td>
-  <td><span class="pill">${b.ns}</span></td><td>${b.cm}</td>
-  <td class="r">${b.il}</td><td class="r">${compact(b.obj)}</td><td class="r">${b.use} GiB</td>
-  <td class="r"><button class="control row-act">策略</button>
-    <button class="control row-act danger" style="margin-left:6px">删除</button></td></tr>`).join('');
-
-/* 数据节点表（磁盘同页，见 view-nodes-data） */
-document.getElementById('tbody-nodes-data').innerHTML = NODES.map(n => `<tr>
-  <td class="id">${n.id}<div class="sub num">${n.addr}</div></td>
-  <td>${n.roles}</td><td class="num">${n.az}</td>
-  <td>${st(n.st, n.stl)}</td>
-  <td>${meter(n.fill, n.fill > 85 ? 'crit' : n.fill > 80 ? 'warn' : '')}<span class="sub num">${n.fill}% · ${n.disks} 盘在线</span></td>
-  <td class="r">${n.ext}</td><td class="r num">${n.hb}</td>
-  <td class="r"><button class="control row-act">下线</button></td></tr>`).join('');
-
-/* 元数据节点：承载分区/leader 数/元数据量/delq —— 都来自分区心跳聚合 */
-const META_NODES = [
-  { id: 'node-4', addr: '10.0.2.12', az: 'az-b / r2', st: 'good', stl: 'Live', parts: 12, leaders: 5, size: '11.2 GiB', dq: '20.6K', hb: '3s' },
-  { id: 'node-5', addr: '10.0.3.11', az: 'az-c / r1', st: 'warning', stl: '心跳延迟', parts: 12, leaders: 4, size: '9.1 GiB', dq: '10.2K', hb: '24s' },
-  { id: 'node-6', addr: '10.0.3.12', az: 'az-c / r2', st: 'good', stl: 'Live', parts: 12, leaders: 3, size: '8.1 GiB', dq: '5.4K', hb: '1s' },
-];
-document.getElementById('tbody-nodes-meta').innerHTML = META_NODES.map(n => `<tr>
-  <td class="id">${n.id}<div class="sub num">${n.addr}</div></td>
-  <td class="num">${n.az}</td><td>${st(n.st, n.stl)}</td>
-  <td class="r">${n.parts}</td><td class="r">${n.leaders}</td>
-  <td class="r">${n.size}</td><td class="r">${n.dq}</td><td class="r num">${n.hb}</td>
-  <td class="r"><button class="control row-act">迁移分区</button></td></tr>`).join('');
-
-/* 管理节点（PD）：raft 角色 + applied index 落后量 */
-const PD_NODES = [
-  { id: 'node-1', addr: '10.0.1.11', az: 'az-a / r1', raft: 'Leader', st: 'good', stl: 'Live', ai: 1204881, lag: 0, hb: '—' },
-  { id: 'node-2', addr: '10.0.1.12', az: 'az-a / r2', raft: 'Follower', st: 'good', stl: 'Live', ai: 1204879, lag: 2, hb: '1s' },
-  { id: 'node-4', addr: '10.0.2.12', az: 'az-b / r2', raft: 'Follower', st: 'good', stl: 'Live', ai: 1204869, lag: 12, hb: '2s' },
-];
-document.getElementById('tbody-nodes-pd').innerHTML = PD_NODES.map(n => `<tr>
-  <td class="id">${n.id}<div class="sub num">${n.addr}</div></td>
-  <td class="num">${n.az}</td>
-  <td>${n.raft === 'Leader' ? '<span class="pill" style="border:1px solid var(--series-1);background:none;color:var(--series-1)">Leader</span>'
-                            : '<span class="pill">Follower</span>'}</td>
-  <td>${st(n.st, n.stl)}</td>
-  <td class="r">${n.ai.toLocaleString()}</td>
-  <td class="r">${n.lag}</td><td class="r num">${n.hb}</td>
-  <td class="r"><button class="control row-act">${n.raft === 'Leader' ? '转移 leader' : '详情'}</button></td></tr>`).join('');
-
-document.getElementById('tbody-pd-tickers').innerHTML = [
-  ['placement', '10s', 'Chunk 水位驱动创建（两段 staging）', '2s 前'],
-  ['liveness', '5s', '节点/磁盘活性判定（Offline 30s / Lost 300s）', '1s 前'],
-  ['writer_liveness', '30s', 'writer_token 超期扫描（dead_after 90s）', '12s 前'],
-  ['job_lease', '10s', 'Job 租约到期改派', '4s 前'],
-  ['meta_scheduler', '30s', '分区分裂 / 迁移决策', '18s 前'],
-].map(([n, p, d, t]) => `<tr><td class="id mono">${n}</td><td class="num">${p}</td>
-  <td>${d}</td><td class="r num">${t}</td></tr>`).join('');
-
-/* 磁盘状态列 = 状态机值本身（Normal/Broken/Repairing/Dropped）；
-   水位高低由 meter 颜色承载，不篡改状态图标——否则 "warning 图标 + Normal 文字" 自相矛盾 */
-document.getElementById('tbody-admin-disks').innerHTML = [
-  { id: 'disk-23', n: 'node-3', p: '/data/23', st: 'serious', stl: 'Repairing', fill: 0, sh: 0, note: '重建中 46%' },
-  { id: 'disk-19', n: 'node-3', p: '/data/19', st: 'good', stl: 'Normal', fill: 91, sh: 604 },
-  { id: 'disk-07', n: 'node-1', p: '/data/07', st: 'good', stl: 'Normal', fill: 84, sh: 588 },
-  { id: 'disk-31', n: 'node-4', p: '/data/31', st: 'good', stl: 'Normal', fill: 72, sh: 511 },
-  { id: 'disk-42', n: 'node-6', p: '/data/42', st: 'good', stl: 'Normal', fill: 65, sh: 470 },
-  { id: 'disk-11', n: 'node-2', p: '/data/11', st: 'muted', stl: 'Dropped', fill: 0, sh: 0, note: '已下线' },
-].map(d => `<tr>
-  <td class="id">${d.id}</td><td>${d.n}</td><td class="mono">${d.p}</td>
-  <td>${st(d.st, d.stl)}</td>
-  <td>${d.fill ? meter(d.fill, d.fill > 85 ? 'crit' : d.fill > 80 ? 'warn' : '') + `<span class="sub num">${d.fill}%</span>`
-                : `<span class="sub">${d.note}</span>`}</td>
-  <td class="r">${d.sh || '—'}</td>
-  <td class="r"><button class="control row-act">${d.st === 'muted' ? '重新上线' : '下线'}</button></td></tr>`).join('');
-
-document.getElementById('tbody-admin-chunks').innerHTML = [
-  { id: 'chunk-4182', st: 'good', stl: 'Writable', d: 'node-1×3 node-2×3 node-4×3 node-6×3 …', e: 0 },
-  { id: 'chunk-4181', st: 'good', stl: 'Writable', d: 'node-2×3 node-4×3 node-5×3 node-6×3 …', e: 0 },
-  { id: 'chunk-3901', st: 'serious', stl: 'Rebuilding', d: 'disk-23 的 1 个 shard 重建中', e: 2 },
-  { id: 'chunk-3900', st: 'muted', stl: 'Sealed', d: 'node-1×3 node-3×3 node-4×3 node-5×3 …', e: 1 },
-  { id: 'chunk-3899', st: 'muted', stl: 'Sealed', d: 'node-2×3 node-3×3 node-5×3 node-6×3 …', e: 0 },
-].map(c => `<tr>
-  <td class="id">${c.id}</td><td>${st(c.st, c.stl)}</td><td>EC 12+4</td>
-  <td class="sub">${c.d}</td><td class="r">${c.e}</td>
-  <td class="r"><button class="control row-act">Seal</button></td></tr>`).join('');
-
-document.getElementById('tbody-admin-partitions').innerHTML = [
-  { id: 'p-1', ns: 'flat', r: '[-∞, b3f1…)', l: 'node-4', p: '4,5,6', s: '4.62 GiB', dq: '18.4K', op: 'split 排队中', over: 1 },
-  { id: 'p-2', ns: 'flat', r: '[b3f1…, e07a…)', l: 'node-5', p: '4,5,6', s: '3.41 GiB', dq: '9.1K', op: '—' },
-  { id: 'p-3', ns: 'flat', r: '[e07a…, +∞)', l: 'node-6', p: '4,5,6', s: '2.88 GiB', dq: '6.7K', op: '—' },
-  { id: 'p-4', ns: 'hier', r: 'bucket ckpt-llm', l: 'node-4', p: '4,5,6', s: '2.10 GiB', dq: '2.2K', op: 'migrate → node-2' },
-  { id: 'p-5', ns: 'hier', r: 'bucket ckpt-llm', l: 'node-5', p: '4,5,6', s: '1.34 GiB', dq: '1.1K', op: '—' },
-].map(p => `<tr>
-  <td class="id">${p.id}</td><td><span class="pill">${p.ns}</span></td>
-  <td class="mono">${p.r}</td><td>${p.l}</td><td class="num">${p.p}</td>
-  <td class="r" ${p.over ? 'style="color:var(--status-warning);font-weight:600"' : ''}>${p.s}</td>
-  <td class="r">${p.dq}</td>
-  <td>${p.op === '—' ? '<span class="sub">—</span>' : `<span class="pill">${p.op}</span>`}</td>
-  <td class="r"><button class="control row-act">分裂</button></td></tr>`).join('');
-
-document.getElementById('tbody-admin-jobs').innerHTML = [
-  { id: 'job-1041', k: 'RepairDisk', st: 'serious', stl: 'Running', c: 'node-6', pct: 46, w: '1.9 / 4.1 TiB', l: '22s' },
-  { id: 'job-1040', k: 'InspectRound', st: 'good', stl: 'Running', c: 'node-1', pct: 78, w: '3.1M chunk', l: '28s' },
-  { id: 'job-1039', k: 'GcRound', st: 'good', stl: 'Running', c: 'node-4', pct: 23, w: '12.4 GiB 回收', l: '11s' },
-  { id: 'job-1038', k: 'Balance', st: 'muted', stl: 'Done', c: 'node-2', pct: 100, w: '完成', l: '—' },
-].map(j => `<tr>
-  <td class="id">${j.id}</td><td>${j.k}</td><td>${st(j.st, j.stl)}</td><td>${j.c}</td>
-  <td>${meter(j.pct, j.k === 'RepairDisk' ? 'warn' : '')}<span class="sub num">${j.pct}% · ${j.w}</span></td>
-  <td class="r num">${j.l}</td>
-  <td class="r"><button class="control row-act">${j.stl === 'Running' ? '改派' : '详情'}</button></td></tr>`).join('');
-
-document.getElementById('tbody-config').innerHTML = [
-  ['scheduler.split_threshold_bytes', '4294967296'],
-  ['meta.delete_safety_delay_secs', '7200'],
-  ['gateway.admission_pool_bytes', '4294967296'],
-  ['store.qos.background_rate', '0（不限）'],
-  ['writer.dead_after_millis', '90000'],
-].map(([k, v]) => `<tr><td class="mono id">${k}</td><td class="r mono">${v}</td></tr>`).join('');
-
-document.getElementById('tbody-accounts').innerHTML = [
-  { a: 'root', r: 'admin', k: 1, b: '全部' },
-  { a: 'trainer-team', r: 'readwrite', k: 2, b: 'datasets-imagenet, ckpt-llm' },
-  { a: 'analytics-ro', r: 'readonly', k: 1, b: 'datasets-laion, features-v3' },
-  { a: 'console-viewer', r: 'readonly（仅 console）', k: 0, b: '—' },
-].map(x => `<tr><td class="id">${x.a}</td><td><span class="pill">${x.r}</span></td>
-  <td class="r">${x.k}</td><td>${x.b}</td>
-  <td class="r"><button class="control row-act">编辑</button></td></tr>`).join('');
-
 /* ═══ render + nav ══════════════════════════════════════════════════════ */
 const TITLES = {
   overview: ['概览', 'PD leader node-1 · term 47'],
@@ -1336,7 +1192,7 @@ function charts() {
         label: 'node-' + n.node_id, value: n.fill_pct, suffix: '%',
         over: n.fill_pct > 85, note: '已用占比',
       }))
-    : NODES.map(n => ({ label: n.id, value: n.fill, suffix: '%', over: n.fill > 85, note: '已用占比' }));
+    : [];   // no data until /overview loads — never fabricate
   barChart(document.getElementById('chart-nodes'), { rows: capRows, unit: '%' });
 
   /* health, not identity → reserved status palette; Sealed is healthy (green), not "other" */
@@ -1358,26 +1214,20 @@ function charts() {
       { label: '节点', values: [n.live + n.starting, n.offline, n.lost + n.decommissioned] },
     ];
   } else {
-    stateGroups = [
-      { label: '磁盘', values: [46, 1, 1] }, { label: 'Chunk', values: [4176, 6, 0] },
-      { label: '分区', values: [10, 2, 0] }, { label: '节点', values: [4, 2, 0] },
-    ];
+    stateGroups = [];   // empty until /overview loads
   }
   stateChart(document.getElementById('chart-state'), { cats: HEALTH, groups: stateGroups });
 
-  /* 元数据节点页的两张当前状态图 */
+  /* 元数据节点页的两张图，从真实 loader 缓存读（无数据则空） */
   const ml = document.getElementById('chart-meta-leaders');
   if (ml) barChart(ml, {
-    rows: META_NODES.map(n => ({ label: n.id, value: n.leaders, note: 'leader 分区数' })),
+    rows: (META_ROWS || []).map(n => ({ label: 'node-' + n.node_id, value: n.leaders, note: 'leader 分区数' })),
     unit: '个', decimals: 0,
   });
   const mp = document.getElementById('chart-meta-parts');
   if (mp) barChart(mp, {
-    rows: [
-      { label: 'p-1', value: 4.62, over: true, note: '超阈值待分裂' },
-      { label: 'p-2', value: 3.41 }, { label: 'p-3', value: 2.88 },
-      { label: 'p-4', value: 2.10 }, { label: 'p-5', value: 1.34 },
-    ], unit: 'GiB', decimals: 2,
+    rows: (PARTITION_ROWS || []).map(p => ({ label: 'p-' + p.partition_id, value: p.epoch, note: 'epoch' })),
+    unit: '', decimals: 0,
   });
 }
 charts();
@@ -1463,6 +1313,7 @@ async function loadDataNodes() {
 }
 async function loadMetaNodes() {
   let rows; try { rows = await api('nodes/meta'); } catch { return; }
+  META_ROWS = rows;
   document.getElementById('tbody-nodes-meta').innerHTML = rows.map(n => `<tr>
     <td class="id">node-${n.node_id}<div class="sub num">${n.addr}</div></td>
     <td class="num">${n.az} / ${n.rack}</td><td>${nodeStatusCell(n.status)}</td>
@@ -1530,6 +1381,51 @@ async function loadUsage() {
     <td class="r num">${b.created_at ? new Date(b.created_at).toISOString().slice(0, 10) : '—'}</td></tr>`).join('')
     || '<tr><td colspan="6" class="sub" style="padding:16px">暂无存储桶</td></tr>';
 }
+/* ── admin management surfaces (08 §3): real loaders for the four management
+   pages. Each reads its /admin/* endpoint; empty state is an explicit message,
+   never fabricated rows. */
+async function loadAdminBuckets() {
+  let rows; try { rows = await api('admin/buckets'); } catch { return; }
+  document.getElementById('tbody-admin-buckets').innerHTML = rows.map(b => `<tr>
+    <td class="id">${b.name}<div class="sub num">#${b.bucket_id} · ${b.status}</div></td>
+    <td><span class="pill">${b.ns_mode}</span></td><td>EC ${b.codemode_id}</td>
+    <td class="r">${b.inline_threshold ? bytesH(b.inline_threshold) : '—'}</td>
+    <td class="r">—</td><td class="r">—</td>
+    <td class="r"><button class="control row-act">策略</button>
+      <button class="control row-act danger" style="margin-left:6px">删除</button></td></tr>`).join('')
+    || '<tr><td colspan="7" class="sub" style="padding:16px">暂无存储桶</td></tr>';
+}
+async function loadAdminChunks() {
+  let h; try { h = await api('admin/chunks'); } catch { return; }
+  setText('chunk-total', (h.total ?? 0).toLocaleString());
+  setText('chunk-writable', (h.writable ?? 0).toLocaleString());
+  setText('chunk-sealed', (h.sealed ?? 0).toLocaleString());
+  setText('chunk-broken', (h.broken ?? 0).toLocaleString());
+  document.getElementById('tbody-admin-chunks').innerHTML =
+    '<tr><td colspan="6" class="sub" style="padding:16px">按 chunk_id 或磁盘查询的具体 shard 明细随按 id/盘查询端点落地；当前为集群级状态计数。</td></tr>';
+}
+async function loadAdminPartitions() {
+  let rows; try { rows = await api('admin/partitions'); } catch { return; }
+  PARTITION_ROWS = rows;
+  document.getElementById('tbody-admin-partitions').innerHTML = rows.map(p => {
+    const range = (p.start_unbounded ? '[-∞' : '[' + (p.start_key || '…'))
+      + ', ' + (p.end_unbounded ? '+∞)' : (p.end_key || '…') + ')');
+    const leader = p.leader_addr ? p.leader_addr : (p.leader_node_id ? 'node-' + p.leader_node_id : '—');
+    return `<tr>
+      <td class="id">p-${p.partition_id}</td><td><span class="pill">${p.ns}</span></td>
+      <td class="mono">${range}</td><td>${leader}</td><td class="num">${(p.peers || []).join(',')}</td>
+      <td class="r">—</td><td class="r">—</td>
+      <td><span class="sub">epoch ${p.epoch}</span></td>
+      <td class="r"><button class="control row-act">分裂</button></td></tr>`;
+  }).join('') || '<tr><td colspan="9" class="sub" style="padding:16px">暂无分区</td></tr>';
+}
+async function loadAdminConfig() {
+  let rows; try { rows = await api('admin/config'); } catch { return; }
+  document.getElementById('tbody-config').innerHTML = rows.map(c =>
+    `<tr><td class="mono id">${c.key}</td><td class="r mono">${c.value}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="sub" style="padding:16px">配置中心暂无条目</td></tr>';
+}
+
 /* ── object browse (W5): list + detail via injected browser; download is a 302
    to a gateway (§4) with a caller credential the session doesn't hold, so it
    stays disabled until that mechanism lands. */
@@ -1580,6 +1476,13 @@ async function loadObjectDetail(key) {
   document.getElementById('detail-key').textContent = key;
   let d; try { d = await api(`object?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(key)}`); }
   catch { return; }
+  // The download is a 302 to a gateway with a presigned URL (08 §4) — point the
+  // button at it now that an object is selected.
+  const dl = document.getElementById('browser-download');
+  dl.disabled = false;
+  dl.onclick = () => {
+    window.location = `/api/v1/object/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(key)}`;
+  };
   document.getElementById('detail-body').innerHTML = `
     <dt>大小</dt><dd class="num">${bytesH(d.size)}</dd>
     <dt>ETag</dt><dd class="mono">${d.etag}</dd>
@@ -1608,6 +1511,10 @@ const VIEW_LOADERS = {
   'nodes-meta': loadMetaNodes,
   'nodes-pd': loadPdNodes,
   'admin-jobs': loadJobs,
+  'admin-buckets': loadAdminBuckets,
+  'admin-chunks': loadAdminChunks,
+  'admin-partitions': loadAdminPartitions,
+  'admin-settings': loadAdminConfig,
 };
 function loadView(v) { const fn = VIEW_LOADERS[v]; if (fn) fn(); }
 // Poll the active management view every 15s (overview keeps its own 5s poll).

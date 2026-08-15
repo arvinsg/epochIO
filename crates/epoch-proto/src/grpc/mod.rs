@@ -88,6 +88,7 @@ mod tests {
                 parity: 2,
                 stripe_size: 1 << 20,
                 blob_size: 32 << 20,
+                write_quorum: 0,
             }),
             status: pd::ChunkStatus::Writable as i32,
             shards: vec![pd::ShardView {

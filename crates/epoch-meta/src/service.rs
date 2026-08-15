@@ -916,8 +916,20 @@ impl MetaNode for MetaNodeService {
                 let view = file_to_head_view(&f);
                 let (inline_data, slices) = match &f.content {
                     ContentHead::Inline(bytes) => (bytes.clone(), Vec::new()),
-                    ContentHead::Slices(sl) => {
-                        (Vec::new(), sl.iter().map(slice_to_proto).collect())
+                    // EC file: the head-embedded slices *plus* every overflow
+                    // segment in order (03 §4.2). Serving only the embedded
+                    // slices silently truncates every file whose list spills
+                    // past the head.
+                    ContentHead::Slices(_) => {
+                        let full = ns_hier::full_slices(
+                            self.manager.store().as_ref(),
+                            bucket,
+                            req.parent_ino,
+                            &req.name,
+                            &f,
+                        )
+                        .map_err(|e| Status::internal(format!("read hier segments: {e}")))?;
+                        (Vec::new(), full.iter().map(slice_to_proto).collect())
                     }
                 };
                 (
@@ -1158,6 +1170,99 @@ impl MetaNode for MetaNodeService {
         }))
     }
 
+    async fn hier_rename(
+        &self,
+        request: Request<meta::HierRenameRequest>,
+    ) -> Result<Response<meta::HierRenameResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = BucketId::new(req.bucket_id);
+        // Both names must route to this partition — the caller (gateway) resolves
+        // each; a cross-split rename surfaces as EXDEV without a proposal.
+        let from_routing = hier_routing_key(req.parent_ino, &req.from);
+        let to_routing = hier_routing_key(req.parent_ino, &req.to);
+        if self.route(bucket, &from_routing).map(|(g, _)| g)
+            != self.route(bucket, &to_routing).map(|(g, _)| g)
+        {
+            return Ok(Response::new(meta::HierRenameResponse {
+                error: None,
+                rejected: "EXDEV".to_string(),
+            }));
+        }
+        let op = ns_hier::HierOp::RenameSameDir {
+            bucket,
+            parent_ino: req.parent_ino,
+            from: req.from.clone(),
+            to: req.to.clone(),
+            ts_millis: req.ts_millis,
+        };
+        match self
+            .propose_hier(bucket, req.parent_ino, &req.from, op)
+            .await?
+        {
+            Ok(resp) => Ok(Response::new(meta::HierRenameResponse {
+                error: None,
+                rejected: rejected_reason(&resp),
+            })),
+            Err(error) => Ok(Response::new(meta::HierRenameResponse {
+                error: Some(error),
+                rejected: String::new(),
+            })),
+        }
+    }
+
+    async fn hier_rmdir_unlink(
+        &self,
+        request: Request<meta::HierRmdirUnlinkRequest>,
+    ) -> Result<Response<meta::HierRmdirUnlinkResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = BucketId::new(req.bucket_id);
+        let op = ns_hier::HierOp::RmdirUnlink {
+            bucket,
+            parent_ino: req.parent_ino,
+            name: req.name.clone(),
+            ts_millis: req.ts_millis,
+        };
+        match self
+            .propose_hier(bucket, req.parent_ino, &req.name, op)
+            .await?
+        {
+            Ok(resp) => Ok(Response::new(meta::HierRmdirUnlinkResponse {
+                error: None,
+                rejected: rejected_reason(&resp),
+            })),
+            Err(error) => Ok(Response::new(meta::HierRmdirUnlinkResponse {
+                error: Some(error),
+                rejected: String::new(),
+            })),
+        }
+    }
+
+    async fn hier_rmdir_sentinel(
+        &self,
+        request: Request<meta::HierRmdirSentinelRequest>,
+    ) -> Result<Response<meta::HierRmdirSentinelResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = BucketId::new(req.bucket_id);
+        // Route by the sentinel's own coordinate: the directory's ino lives in
+        // the partition that minted it (03 §6.5), and the empty-name routing key
+        // targets the sentinel record.
+        let op = ns_hier::HierOp::RmdirSentinel {
+            bucket,
+            ino: req.ino,
+            ts_millis: req.ts_millis,
+        };
+        match self.propose_hier(bucket, req.ino, &[], op).await? {
+            Ok(resp) => Ok(Response::new(meta::HierRmdirSentinelResponse {
+                error: None,
+                rejected: rejected_reason(&resp),
+            })),
+            Err(error) => Ok(Response::new(meta::HierRmdirSentinelResponse {
+                error: Some(error),
+                rejected: String::new(),
+            })),
+        }
+    }
+
     async fn export_references(
         &self,
         request: Request<meta::ExportReferencesRequest>,
@@ -1192,6 +1297,45 @@ impl MetaNode for MetaNodeService {
         Ok(Response::new(meta::ExportReferencesResponse {
             hosted: true,
             blob_ids: refs.into_iter().collect(),
+        }))
+    }
+    async fn delete_range(
+        &self,
+        request: Request<meta::DeleteRangeRequest>,
+    ) -> Result<Response<meta::DeleteRangeResponse>, Status> {
+        let req = request.into_inner();
+        // Must host the partition and be its leader: the purge writes directly
+        // against committed state (the bucket is already tombstoned at PD, so no
+        // new records for it can be proposed), and only the leader's view is
+        // complete enough to be authoritative.
+        let Some(info) = self.registry.info(req.partition_id) else {
+            return Ok(Response::new(meta::DeleteRangeResponse {
+                hosted: false,
+                purged: 0,
+            }));
+        };
+        let Some(raft) = self.manager.raft(req.partition_id) else {
+            return Ok(Response::new(meta::DeleteRangeResponse {
+                hosted: false,
+                purged: 0,
+            }));
+        };
+        if let Err(err) = self.linearize(req.partition_id, &raft).await {
+            return Err(Status::failed_precondition(format!(
+                "delete_range not leader: {err:?}"
+            )));
+        }
+        let store = self.manager.store();
+        let purged = crate::ns_common::purge_bucket_records(
+            store.as_ref(),
+            &info.range,
+            BucketId::new(req.bucket_id),
+            &|ops| store.apply(ops),
+        )
+        .map_err(|e| Status::internal(format!("delete_range purge: {e}")))?;
+        Ok(Response::new(meta::DeleteRangeResponse {
+            hosted: true,
+            purged,
         }))
     }
 }

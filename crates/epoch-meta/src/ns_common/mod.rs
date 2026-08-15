@@ -24,9 +24,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use epoch_proto::BucketId;
+
 use crate::ref_extractor::{PendingDelete, Slice};
 use crate::store::keys::MetaCf;
-use crate::store::{MetaStoreError, StoreOp};
+use crate::store::{MetaStore, MetaStoreError, StoreOp};
 
 /// Slices embedded in the head before spilling to segments (03 §4.2: ≈2 GB
 /// objects stay segment-free).
@@ -112,6 +114,75 @@ impl ContentHead {
         }
     }
 }
+
+/// Purges every record of one bucket from this partition's owned key space
+/// (99-Q15 bucket deletion: 各 CF 按前缀 DeleteRange). Called by the MetaNode's
+/// `DeleteRange` RPC once the bucket is tombstoned (DELETING) at PD.
+///
+/// Only metadata is removed here — the blob bodies this orphans are reclaimed
+/// separately by GcRound (01 §6.3). The bucket's records are purged from every
+/// bucket-scoped CF the partition owns (`meta`/`fs` primary index, `meta_seg`
+/// overflow, `upload` in-flight multipart, `delq` pending deletes, `ttl` expiry
+/// keys). `delq` is purged too: its slices are already scheduled for deletion
+/// and must not survive the bucket.
+///
+/// The scan is paged and each page is committed as its own batch so a huge
+/// bucket never builds an unbounded write batch.
+///
+/// # Errors
+///
+/// Returns [`MetaStoreError`] if a scan or batch apply fails.
+pub fn purge_bucket_records(
+    store: &dyn MetaStore,
+    range: &crate::partition::PartitionRange,
+    bucket: BucketId,
+    apply_batch: &dyn Fn(&[StoreOp]) -> Result<(), MetaStoreError>,
+) -> Result<u64, MetaStoreError> {
+    // The bucket's key prefix in any CF: the leading type tag + the big-endian
+    // bucket id (03 §2: `type | bucket_id | …`). Intersecting that prefix range
+    // with the partition's owned range yields exactly the keys to purge — a
+    // partition that owns a slice of the bucket purges only its own slice.
+    let mut purged = 0u64;
+    for kr in range.key_ranges() {
+        let prefix = [kr.cf.tag()]
+            .into_iter()
+            .chain(bucket.get().to_be_bytes())
+            .collect::<Vec<u8>>();
+        let prefix_end =
+            crate::store::keys::prefix_end(&prefix).unwrap_or_else(|| vec![kr.cf.tag() + 1]);
+        let start = kr.start.clone().max(prefix.clone());
+        let end = kr.end.clone().min(prefix_end);
+        if start >= end {
+            continue; // this partition owns nothing of this bucket in this CF
+        }
+        let mut cursor = start;
+        loop {
+            let page = store.scan(kr.cf, &cursor, &end, SCAN_PURGE_PAGE)?;
+            if page.is_empty() {
+                break;
+            }
+            cursor = page
+                .last()
+                .map(|(k, _)| {
+                    let mut next = k.clone();
+                    next.push(0);
+                    next
+                })
+                .expect("non-empty page");
+            let ops: Vec<StoreOp> = page
+                .into_iter()
+                .map(|(key, _)| StoreOp::delete(kr.cf, key))
+                .collect();
+            purged += ops.len() as u64;
+            apply_batch(&ops)?;
+        }
+    }
+    Ok(purged)
+}
+
+/// The purge page size — small enough that one batch stays cheap on the apply
+/// path (the same bound the delete-queue sweep uses).
+const SCAN_PURGE_PAGE: usize = 1024;
 
 /// One overflow segment of a large object's slice list (CF `meta_seg` value,
 /// 03 §4.2). Shared by both namespaces (the `g` CF holds either's overflow).
@@ -262,6 +333,76 @@ mod tests {
             .chain(segments.into_iter().flat_map(|s| s.slices))
             .collect();
         assert_eq!(reassembled, all);
+    }
+
+    fn flat_head(bucket: u64, key: &[u8]) -> StoreOp {
+        StoreOp::put(
+            MetaCf::Meta,
+            crate::store::keys::flat_key(MetaCf::Meta, BucketId::new(bucket), key, &[]),
+            b"head".to_vec(),
+        )
+    }
+
+    #[test]
+    fn purge_bucket_records_removes_only_the_target_bucket() {
+        let engine = crate::store::mem::MemEngine::new();
+        // Two buckets in one flat partition; bucket 2 is the deletion target.
+        engine
+            .apply(&[
+                flat_head(1, b"keep/a"),
+                flat_head(1, b"keep/b"),
+                flat_head(2, b"drop/x"),
+                flat_head(2, b"drop/y"),
+                flat_head(2, b"drop/z"),
+            ])
+            .expect("seed");
+        let range = crate::partition::PartitionRange::full(crate::partition::Namespace::Flat);
+
+        let purged =
+            purge_bucket_records(&engine, &range, BucketId::new(2), &|ops| engine.apply(ops))
+                .expect("purge");
+        assert_eq!(purged, 3, "exactly the target bucket's records are purged");
+
+        // Bucket 1 is untouched.
+        for key in [b"keep/a".as_slice(), b"keep/b"] {
+            let k = crate::store::keys::flat_key(MetaCf::Meta, BucketId::new(1), key, &[]);
+            assert!(engine.get(MetaCf::Meta, &k).expect("get").is_some());
+        }
+        // Bucket 2 is gone.
+        for key in [b"drop/x".as_slice(), b"drop/y", b"drop/z"] {
+            let k = crate::store::keys::flat_key(MetaCf::Meta, BucketId::new(2), key, &[]);
+            assert!(engine.get(MetaCf::Meta, &k).expect("get").is_none());
+        }
+
+        // Idempotent: a second purge finds nothing left.
+        let again =
+            purge_bucket_records(&engine, &range, BucketId::new(2), &|ops| engine.apply(ops))
+                .expect("re-purge");
+        assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn purge_bucket_records_respects_the_partition_range() {
+        let engine = crate::store::mem::MemEngine::new();
+        // A partition that owns only a slice of the namespace purges only its
+        // own slice of the bucket — records outside its range belong to another
+        // partition and must not be touched.
+        engine
+            .apply(&[flat_head(5, b"a"), flat_head(5, b"m"), flat_head(5, b"z")])
+            .expect("seed");
+        // Partition owning [bucket 5 key "m", +∞).
+        let range = crate::partition::PartitionRange {
+            ns: crate::partition::Namespace::Flat,
+            start: Some((BucketId::new(5), b"m".to_vec())),
+            end: None,
+        };
+        let purged =
+            purge_bucket_records(&engine, &range, BucketId::new(5), &|ops| engine.apply(ops))
+                .expect("purge");
+        assert_eq!(purged, 2, "only the in-range records (m, z) purge");
+        // "a" is before the partition's start → survives.
+        let k = crate::store::keys::flat_key(MetaCf::Meta, BucketId::new(5), b"a", &[]);
+        assert!(engine.get(MetaCf::Meta, &k).expect("get").is_some());
     }
 
     #[test]

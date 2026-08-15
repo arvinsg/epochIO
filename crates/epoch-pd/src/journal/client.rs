@@ -128,7 +128,11 @@ impl Journal {
     /// Returns [`PdError::NotLeader`] if this node is not the leader (the caller
     /// should redirect and retry), or [`PdError::Raft`] on other raft failures.
     pub async fn propose(&self, entry: PdEntry) -> Result<ApplyResult, PdError> {
+        // Every PD mutation funnels through this one propose, so it is the single
+        // natural place to time raft consensus (08 §5.1).
+        let start = std::time::Instant::now();
         let response = self.raft.client_write(entry).await?;
+        crate::metrics::record_propose(start.elapsed().as_secs_f64());
         Ok(response.data)
     }
 
@@ -464,6 +468,64 @@ impl Journal {
             .is_ok())
     }
 
+    /// GcRound bookkeeping (01 §6.3: PD 只发 Round 号). GcRound is the only
+    /// self-driven Job kind — every DataNode scans its own disk against the
+    /// MetaNode keep-set (02 §3.2), with no coordinator pulling subtasks. So PD
+    /// never assigns it a coordinator; instead this sweep maintains exactly one
+    /// *open* GcRound whose replicated Job id is the round number.
+    ///
+    /// Each call: if no open GcRound exists, complete the previous round (if it
+    /// has been open at least `interval` — enough wall-clock for a node round to
+    /// have run) and open a new one. A completed round does not block the next
+    /// (mirrors `sweep_inspect_round`). Returns `true` when a new round opened.
+    ///
+    /// `now_millis` is supplied by the caller so `apply` stays clock-free; the
+    /// auto-complete check reads committed state only.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: a failed propose is retried on the next tick.
+    pub async fn sweep_gc_round(
+        &self,
+        interval_millis: u64,
+        now_millis: u64,
+    ) -> Result<bool, PdError> {
+        use crate::job::types::{JobKind, JobState};
+        if !self.raft.metrics().borrow().state.is_leader() {
+            return Ok(false);
+        }
+        let mut open_round: Option<crate::job::types::Job> = None;
+        for job in self.state().jobs().list() {
+            if matches!(job.kind, JobKind::GcRound) && job.state != JobState::Done {
+                open_round = Some(job);
+            }
+        }
+        if let Some(round) = open_round {
+            // The round stays open for one full interval so every node's
+            // self-driven scan can observe it; after that it is complete by
+            // construction (each node's own round is idempotent, 02 §3.2).
+            let opened_at = round.progress_watermark;
+            if now_millis.saturating_sub(opened_at) < interval_millis {
+                return Ok(false);
+            }
+            let _ = self.complete_job(round.id).await;
+        }
+        // Open the next round; its Job id is the round number, and we record the
+        // opening wall-clock on the watermark so the next sweep knows when this
+        // round has run its interval (the watermark is opaque, per-Kind state,
+        // 01 §6.1 — GcRound uses it as "opened_at millis").
+        match self.create_job(JobKind::GcRound).await {
+            Ok(ApplyResult::JobCreated { job_id }) => {
+                let _ = self
+                    .advance_job_watermark(job_id, now_millis, now_millis)
+                    .await;
+                Ok(true)
+            }
+            // A concurrent create (or a rejected propose) is retried next tick.
+            _ => Ok(false),
+        }
+    }
+
     /// Marks a disk for decommission (01 §6.3 DropDisk): transitions it
     /// `Normal → Draining` (excluded from placement, still readable). Leader-only.
     /// Idempotent — a disk already past `Normal` returns `false`.
@@ -720,6 +782,34 @@ impl Journal {
             codemode_id,
             engine,
             created_at,
+        }))
+        .await
+    }
+
+    /// Tombstones a bucket for deletion (99-Q15): flips it to `Deleting`, after
+    /// which the gateway refuses new writes. Returns [`ApplyResult::BucketDeleted`]
+    /// with the id, or [`ApplyResult::Rejected`] if the name is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdError::NotLeader`] or [`PdError::Raft`] as [`propose`](Self::propose).
+    pub async fn tombstone_bucket(&self, name: &str) -> Result<ApplyResult, PdError> {
+        self.propose(PdEntry::TombstoneBucket(crate::bucket::TombstoneBucket {
+            name: name.to_string(),
+        }))
+        .await
+    }
+
+    /// Purges a tombstoned bucket's identity record after every partition has
+    /// purged its records. Returns [`ApplyResult::BucketDeleted`] with the id, or
+    /// [`ApplyResult::Rejected`] if the bucket is absent or not tombstoned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PdError::NotLeader`] or [`PdError::Raft`] as [`propose`](Self::propose).
+    pub async fn purge_bucket(&self, name: &str) -> Result<ApplyResult, PdError> {
+        self.propose(PdEntry::PurgeBucket(crate::bucket::PurgeBucket {
+            name: name.to_string(),
         }))
         .await
     }

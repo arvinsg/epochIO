@@ -24,6 +24,8 @@ workspace = true
 
 [dependencies]
 epoch-proto = { workspace = true, features = ["serde", "grpc"] }
+epoch-telemetry = { workspace = true }
+prometheus = { workspace = true }
 epoch-rocks = { workspace = true }
 openraft = { workspace = true }
 rocksdb = { workspace = true }

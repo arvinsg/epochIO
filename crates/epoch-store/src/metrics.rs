@@ -36,6 +36,8 @@ struct StoreMetrics {
     /// `epochio_store_throttle_wait_seconds_total{class}` — cumulative time the
     /// QoS limiter blocked, per class.
     throttle_wait: CounterVec,
+    /// `epochio_store_io_duration_seconds{op}` — read/write latency.
+    io_duration: prometheus::HistogramVec,
 }
 
 static METRICS: OnceLock<StoreMetrics> = OnceLock::new();
@@ -68,11 +70,22 @@ fn register(registry: &Registry) -> StoreMetrics {
     // Ignore an AlreadyRegistered error so a second engine on the same process
     // registry is harmless (the first registration's handles stay authoritative,
     // and these clones still increment the same underlying series).
+    let io_duration = prometheus::HistogramVec::new(
+        prometheus::HistogramOpts::new(
+            epoch_telemetry::metrics::metric_name("store", "io", "duration_seconds"),
+            "Store IO latency, by operation.",
+        )
+        .buckets(epoch_telemetry::metrics::LATENCY_BUCKETS_SECONDS.to_vec()),
+        &["op"],
+    )
+    .expect("valid io_duration metric");
     let _ = registry.register(Box::new(io_bytes.clone()));
     let _ = registry.register(Box::new(throttle_wait.clone()));
+    let _ = registry.register(Box::new(io_duration.clone()));
     StoreMetrics {
         io_bytes,
         throttle_wait,
+        io_duration,
     }
 }
 
@@ -91,6 +104,14 @@ pub(crate) fn record_io(class: IoClass, op: &str, bytes: u64) {
         .io_bytes
         .with_label_values(&[class_label(class), op])
         .inc_by(bytes as f64);
+}
+
+/// Records one IO operation's latency for `op` (`"read"` / `"write"`).
+pub(crate) fn record_io_duration(op: &str, seconds: f64) {
+    metrics()
+        .io_duration
+        .with_label_values(&[op])
+        .observe(seconds);
 }
 
 /// Records `seconds` spent blocked in the `class` QoS limiter.
@@ -122,6 +143,17 @@ mod tests {
             names
                 .iter()
                 .any(|n| n == "epochio_store_throttle_wait_seconds_total")
+        );
+        m.io_duration.with_label_values(&["read"]).observe(0.001);
+        let names: Vec<String> = registry
+            .gather()
+            .iter()
+            .map(|f| f.get_name().to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "epochio_store_io_duration_seconds")
         );
     }
 }

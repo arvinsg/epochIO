@@ -343,6 +343,29 @@ impl PdClient {
         Ok(response.buckets)
     }
 
+    /// Tombstones a bucket for deletion (99-Q15). Returns the bucket id.
+    ///
+    /// # Errors
+    /// [] if no replica serves as leader; an RPC error if
+    /// the bucket is unknown (NOT_FOUND).
+    pub async fn delete_bucket(&self, name: &str) -> Result<epoch_proto::BucketId, ClientError> {
+        let request = pd::DeleteBucketRequest {
+            name: name.to_string(),
+        };
+        let response = self
+            .call_on_leader(|mut client| {
+                let request = request.clone();
+                async move {
+                    client
+                        .delete_bucket(request)
+                        .await
+                        .map(Response::into_inner)
+                }
+            })
+            .await?;
+        Ok(epoch_proto::BucketId::new(response.bucket_id))
+    }
+
     /// The credential table (01 §6): the gateway pulls it to verify SigV4
     /// locally (secrets stay in-domain). Cached with periodic refresh by the
     /// caller.

@@ -80,6 +80,7 @@ impl SchedCluster {
                 parity: 1,
                 stripe_size: 4096,
                 blob_size: 64 * 1024,
+                write_quorum: None,
             },
             writer: WriterSpec { token: 1 },
             chunks: Vec::new(),

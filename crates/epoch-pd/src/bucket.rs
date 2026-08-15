@@ -67,6 +67,18 @@ pub enum MetaEngine {
     Mem,
 }
 
+/// The bucket lifecycle state (99-Q15). `Deleting` is a tombstone: the gateway
+/// refuses new writes while the MetaNode purges the bucket's records
+/// (DeleteRange), and GcRound reclaims the orphaned blobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BucketStatus {
+    /// Serving reads and writes.
+    #[default]
+    Active,
+    /// Tombstoned for deletion; new writes are refused.
+    Deleting,
+}
+
 /// A registered bucket (identity + policy; 03 §4.3 inline 护栏的 bucket 覆盖项).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BucketMeta {
@@ -84,6 +96,11 @@ pub struct BucketMeta {
     pub engine: MetaEngine,
     /// Creation timestamp (leader-chosen at proposal, deterministic in apply).
     pub created_at: i64,
+    /// Lifecycle state (99-Q15). `serde(default)` so records written before this
+    /// field existed decode as `Active` — a rolling upgrade must not reject a
+    /// persisted bucket.
+    #[serde(default)]
+    pub status: BucketStatus,
 }
 
 /// Replicated bucket-creation command.
@@ -206,6 +223,7 @@ impl BucketManager {
             codemode_id: cmd.codemode_id,
             engine: cmd.engine,
             created_at: cmd.created_at,
+            status: BucketStatus::Active,
         };
         index.next_id = index
             .next_id
@@ -219,6 +237,69 @@ impl BucketManager {
         batch.put_cf(cf, bucket_id.get().to_be_bytes(), value);
         batch.put_cf(cf, COUNTER_KEY, index.next_id.to_be_bytes());
         Ok(bucket_id)
+    }
+
+    /// Applies a bucket tombstone (99-Q15): flips the bucket `Active → Deleting`.
+    /// Idempotent — an already-`Deleting` bucket is a no-op returning its id; an
+    /// unknown name returns `None`. Deterministic: the outcome depends only on
+    /// committed state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a state-machine write error if the record cannot be serialized.
+    pub(crate) fn apply_tombstone(
+        &self,
+        batch: &mut WriteBatch,
+        name: &str,
+    ) -> Result<Option<BucketId>, SmError> {
+        let mut index = self.write_index();
+        let Some(bucket_id) = index.names.get(name).copied() else {
+            return Ok(None);
+        };
+        let Some(bucket) = index.buckets.get_mut(&bucket_id) else {
+            return Ok(None);
+        };
+        if bucket.status == BucketStatus::Deleting {
+            return Ok(Some(bucket_id));
+        }
+        bucket.status = BucketStatus::Deleting;
+        let snapshot = bucket.clone();
+        let cf = self.cf()?;
+        let value =
+            serde_json::to_vec(&snapshot).map_err(|e| crate::raft::sm_corrupt(&e.to_string()))?;
+        batch.put_cf(cf, bucket_id.get().to_be_bytes(), value);
+        Ok(Some(bucket_id))
+    }
+
+    /// Applies the final purge of a tombstoned bucket's identity record: removes
+    /// it from the CF and the index. Only a `Deleting` bucket can be purged (a
+    /// caller must never purge a live bucket). Idempotent — an unknown name is a
+    /// no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns a state-machine write error if the delete cannot be staged.
+    pub(crate) fn apply_purge(
+        &self,
+        batch: &mut WriteBatch,
+        name: &str,
+    ) -> Result<Option<BucketId>, SmError> {
+        let mut index = self.write_index();
+        let Some(bucket_id) = index.names.get(name).copied() else {
+            return Ok(None);
+        };
+        let Some(bucket) = index.buckets.get(&bucket_id) else {
+            return Ok(None);
+        };
+        if bucket.status != BucketStatus::Deleting {
+            // Refuse to purge a live bucket — the tombstone must come first.
+            return Ok(None);
+        }
+        index.names.remove(name);
+        index.buckets.remove(&bucket_id);
+        let cf = self.cf()?;
+        batch.delete_cf(cf, bucket_id.get().to_be_bytes());
+        Ok(Some(bucket_id))
     }
 
     fn cf(&self) -> Result<&rocksdb::ColumnFamily, SmError> {
@@ -258,6 +339,23 @@ impl BucketManager {
     pub fn is_empty(&self) -> bool {
         self.read_index().buckets.is_empty()
     }
+}
+
+/// Replicated bucket-tombstone command (99-Q15): the first step of deletion —
+/// the bucket flips to `Deleting` and stops accepting writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TombstoneBucket {
+    /// The bucket name to tombstone.
+    pub name: String,
+}
+
+/// Replicated bucket-purge command: removes the identity record once every
+/// partition has purged the bucket's records (DeleteRange). Separate from the
+/// tombstone so the record survives until data is gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurgeBucket {
+    /// The bucket name to purge.
+    pub name: String,
 }
 
 #[cfg(test)]
@@ -350,5 +448,97 @@ mod tests {
             .apply_create(&mut batch, &cmd("ds2"))
             .expect("create");
         assert_ne!(next, id);
+    }
+
+    #[test]
+    fn tombstone_is_idempotent_and_refuses_unknown_names() {
+        let (_dir, manager) = open_manager();
+        let mut batch = WriteBatch::default();
+        let id = manager
+            .apply_create(&mut batch, &cmd("ds"))
+            .expect("create");
+        assert_eq!(manager.get(id).unwrap().status, BucketStatus::Active);
+
+        // Tombstone flips Active → Deleting.
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager
+                .apply_tombstone(&mut batch, "ds")
+                .expect("tombstone"),
+            Some(id)
+        );
+        assert_eq!(manager.get(id).unwrap().status, BucketStatus::Deleting);
+        // Idempotent: a second tombstone is a no-op returning the same id.
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager
+                .apply_tombstone(&mut batch, "ds")
+                .expect("re-tombstone"),
+            Some(id)
+        );
+        // Unknown name → None (the service maps it to NotFound).
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager
+                .apply_tombstone(&mut batch, "ghost")
+                .expect("tombstone unknown"),
+            None
+        );
+    }
+
+    #[test]
+    fn purge_removes_only_tombstoned_buckets() {
+        let (_dir, manager) = open_manager();
+        let mut batch = WriteBatch::default();
+        let id = manager
+            .apply_create(&mut batch, &cmd("ds"))
+            .expect("create");
+
+        // A live bucket cannot be purged — the tombstone must come first.
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager.apply_purge(&mut batch, "ds").expect("purge live"),
+            None
+        );
+        assert!(manager.get(id).is_some());
+
+        // After tombstoning, the purge removes the identity record entirely.
+        let mut batch = WriteBatch::default();
+        manager
+            .apply_tombstone(&mut batch, "ds")
+            .expect("tombstone");
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager.apply_purge(&mut batch, "ds").expect("purge"),
+            Some(id)
+        );
+        assert!(manager.get(id).is_none());
+        assert!(manager.get_by_name("ds").is_none());
+        // Purge is idempotent against an absent record.
+        let mut batch = WriteBatch::default();
+        assert_eq!(
+            manager.apply_purge(&mut batch, "ds").expect("re-purge"),
+            None
+        );
+    }
+
+    #[test]
+    fn tombstone_persists_through_restore() {
+        let (_dir, manager) = open_manager();
+        let db = manager.db.clone();
+        let mut batch = WriteBatch::default();
+        let id = manager
+            .apply_create(&mut batch, &cmd("ds"))
+            .expect("create");
+        manager
+            .apply_tombstone(&mut batch, "ds")
+            .expect("tombstone");
+        db.write(batch).expect("flush");
+
+        let restored = BucketManager::new(db);
+        restored.restore().expect("restore");
+        // A Deleting bucket restores as Deleting — the gateway keeps refusing
+        // writes across a PD restart (the tombstone is the safety gate).
+        assert_eq!(restored.get(id).unwrap().status, BucketStatus::Deleting);
     }
 }

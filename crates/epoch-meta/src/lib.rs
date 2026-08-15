@@ -39,6 +39,7 @@ pub mod deleter;
 pub mod error;
 pub mod gc_export;
 pub mod guard;
+pub(crate) mod metrics;
 pub mod ns_common;
 pub mod ns_flat;
 pub mod ns_hier;

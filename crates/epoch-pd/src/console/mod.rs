@@ -31,6 +31,7 @@ pub mod api;
 pub mod assets;
 pub mod auth;
 pub mod browse;
+pub mod presign;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -89,6 +90,7 @@ pub struct ConsoleState {
     sessions: SessionStore,
     clock: Arc<dyn Clock>,
     browser: Option<Arc<dyn browse::ObjectBrowser>>,
+    service: Option<crate::service::PdControlService>,
 }
 
 impl ConsoleState {
@@ -102,6 +104,7 @@ impl ConsoleState {
             sessions: SessionStore::new(),
             clock: Arc::new(SystemClock),
             browser: None,
+            service: None,
         }
     }
 
@@ -111,6 +114,20 @@ impl ConsoleState {
     pub fn with_browser(mut self, browser: Arc<dyn browse::ObjectBrowser>) -> Self {
         self.browser = Some(browser);
         self
+    }
+
+    /// Attaches the control-plane service (the same instance the gRPC server
+    /// uses). Enables the admin HTTP write/read endpoints that delegate to it.
+    #[must_use]
+    pub fn with_service(mut self, service: crate::service::PdControlService) -> Self {
+        self.service = Some(service);
+        self
+    }
+
+    /// The attached control-plane service, if any (`None` → admin endpoints 501).
+    #[must_use]
+    pub fn service(&self) -> Option<&crate::service::PdControlService> {
+        self.service.as_ref()
     }
 
     /// The journal (read side + write wrappers).
@@ -198,14 +215,17 @@ pub fn spawn_console_server_with_state(
         };
         tracing::info!(%addr, "console serving /console");
         loop {
-            let Ok((stream, _peer)) = listener.accept().await else {
+            let Ok((stream, peer)) = listener.accept().await else {
                 continue;
             };
             let io = TokioIo::new(stream);
             let state = state.clone();
             tokio::spawn(async move {
-                let svc = service_fn(move |req| {
+                let svc = service_fn(move |mut req: Request<hyper::body::Incoming>| {
                     let state = state.clone();
+                    // Inject the peer address so the localhost bootstrap gate can
+                    // tell a local call from a remote one.
+                    req.extensions_mut().insert(peer);
                     async move { route(state, req).await }
                 });
                 let _ = ConnBuilder::new(TokioExecutor::new())
@@ -267,6 +287,18 @@ async fn handle_api(
         return text(StatusCode::OK, "{}");
     }
 
+    // Bootstrap (08 §4 部署初始化鸡生蛋): the very first credential can only be
+    // created before any session exists, so `POST /keys` is allowed
+    // unauthenticated *only* from localhost and *only* while the credential table
+    // is empty. Once any credential exists, the normal session path applies.
+    if rest == "keys"
+        && req.method() == Method::POST
+        && state.journal.state().credentials().list().is_empty()
+        && is_localhost(&req)
+    {
+        return api::create_key(&state, req.into_body()).await;
+    }
+
     // All other endpoints require a session.
     let Some(session) = authenticate(&state, &req) else {
         return text(StatusCode::UNAUTHORIZED, r#"{"error":"unauthenticated"}"#);
@@ -293,7 +325,15 @@ async fn handle_api(
         };
     }
 
-    api::dispatch(&state, rest, &query, &session).await
+    api::dispatch(&state, rest, &query, &session, req).await
+}
+
+/// Whether the request comes from the loopback peer (the bootstrap gate).
+/// `X-Forwarded-For` is deliberately not trusted — this is a local-only path.
+fn is_localhost(req: &Request<hyper::body::Incoming>) -> bool {
+    req.extensions()
+        .get::<std::net::SocketAddr>()
+        .is_some_and(|addr| addr.ip().is_loopback())
 }
 
 /// Handles `POST /api/v1/login`: AK/SK equality check against the credential

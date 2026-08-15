@@ -43,8 +43,8 @@ pub mod types;
 
 pub use commit::{CommitRejection, authorize_commit};
 pub use driver::{
-    JOB_LEASE_MILLIS, JobLeaseHandle, pick_coordinator, spawn_inspect_trigger, spawn_job_lease,
-    spawn_repair_trigger, sweep_job_assignments,
+    JOB_LEASE_MILLIS, JobLeaseHandle, pick_coordinator, spawn_gc_trigger, spawn_inspect_trigger,
+    spawn_job_lease, spawn_repair_trigger, sweep_job_assignments,
 };
 
 /// The `job` column family (01 §6).

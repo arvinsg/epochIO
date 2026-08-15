@@ -114,6 +114,7 @@ mod tests {
             parity: 1,
             stripe_size: 1 << 20,
             blob_size: 32 << 20,
+            write_quorum: None,
         }
     }
 

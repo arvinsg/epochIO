@@ -97,6 +97,7 @@ impl<S: TokenSource> Gateway<S> {
                 blob_id,
                 len: slice.len(),
                 chunk: placement,
+                code: self.code,
             });
             offset = end;
         }

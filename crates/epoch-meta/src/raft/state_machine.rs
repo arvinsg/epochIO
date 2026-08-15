@@ -503,6 +503,7 @@ impl MetaStateMachine {
                 Ok((batch.clone(), MetaResponse::None))
             }
             EntryPayload::Normal(MetaEntry::Flat(op)) => {
+                let apply_start = std::time::Instant::now();
                 // One op = one delete-event sequence (03 §8). The counter is
                 // persisted in this entry's batch, so log replay after a
                 // disableWAL tail loss re-allocates the identical sequence
@@ -526,6 +527,7 @@ impl MetaStateMachine {
                     guard_key(self.group),
                     encode_guard_record(inline, count, total).as_slice(),
                 ));
+                crate::metrics::record_apply("flat", apply_start.elapsed().as_secs_f64());
                 Ok((ops, outcome.response))
             }
             EntryPayload::Normal(MetaEntry::Hier(op)) => {
@@ -638,6 +640,9 @@ impl RaftStateMachine<MetaTypeConfig> for MetaStateMachine {
             } else {
                 self.guard.account_delq(delq_delta(&ops));
             }
+            // Expose the authoritative gauge to /metrics (08 §5.1): the in-memory
+            // counter is the source of truth; this just mirrors it outward.
+            crate::metrics::set_delq_depth(self.group, self.guard.delq_depth());
             results.push(response);
         }
 

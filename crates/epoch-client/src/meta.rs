@@ -526,6 +526,198 @@ impl MetaClient {
             .await?;
         Ok(resp.entries)
     }
+
+    /// Lists a bucket's objects **across partitions** in key order (03 §5 跨分区
+    /// 归并). Walks one partition at a time, merging its pages until `limit` rows
+    /// accumulate or the key space is exhausted, then advances to the next
+    /// partition. This is what makes a multi-partition bucket's LIST complete —
+    /// without it a split bucket silently lists only the partition the scan
+    /// started in.
+    ///
+    /// Returns the merged, key-ordered page plus the resume token for the next
+    /// call (`None` = the listing is complete).
+    ///
+    /// # Errors
+    /// Route/leader failures as [`ClientError`].
+    pub async fn list_objects_merged(
+        &self,
+        bucket: u64,
+        prefix: &[u8],
+        start_after: &[u8],
+        limit: u32,
+    ) -> Result<(Vec<meta::ObjectEntry>, Option<Vec<u8>>), ClientError> {
+        let mut rows: Vec<meta::ObjectEntry> = Vec::new();
+        let mut cursor = start_after.to_vec();
+        // Bound the partitions visited so a misconfigured ring can never loop.
+        for _ in 0..(MAX_ROUTE_ATTEMPTS.max(1) * 256) {
+            let route = self.resolve(NsMode::Flat, bucket, &cursor).await?;
+            // The partition's exclusive end key within this bucket (None = +∞).
+            let part_end: Option<Vec<u8>> = (!route.view.end_unbounded
+                && route.view.end_bucket == bucket)
+                .then(|| route.view.end_key.clone());
+
+            // Page within this partition until its end key or the budget.
+            loop {
+                let remaining = limit.saturating_sub(rows.len() as u32).max(1);
+                let entries = self
+                    .list_objects(bucket, prefix, &cursor, remaining)
+                    .await?;
+                if entries.is_empty() {
+                    break;
+                }
+                // The scan is prefix-bounded but not partition-bounded (the CF is
+                // shared), so truncate at this partition's end key — a page near
+                // the boundary must not leak the next partition's keys.
+                let mut hit_end = false;
+                for e in entries {
+                    if let Some(end) = &part_end
+                        && e.key.as_slice() >= end.as_slice()
+                    {
+                        hit_end = true;
+                        break;
+                    }
+                    cursor = e.key.clone();
+                    rows.push(e);
+                }
+                if hit_end || rows.len() as u32 >= limit {
+                    break;
+                }
+                // A short page means the partition has no more keys under prefix.
+                if (rows.len() as u32) < limit {
+                    break;
+                }
+            }
+
+            // Budget met → there may be more; resume after the last row.
+            if rows.len() as u32 >= limit {
+                return Ok((rows, Some(cursor)));
+            }
+            // Advance past this partition's end into the next one, or stop when
+            // this partition runs to +∞ in the bucket.
+            match part_end {
+                Some(end) if !end.is_empty() => {
+                    cursor = end;
+                }
+                _ => break,
+            }
+        }
+        Ok((rows, None))
+    }
+
+    /// Same-dir rename (03 §6.2, the checkpoint-publish primitive): atomically
+    /// renames `from` → `to` under `parent_ino`. Both names must route to the
+    /// same partition; a cross-split attempt returns `Some("EXDEV")` (v1
+    /// semantics). Returns a `rejected` reason for a type mismatch, `None` when
+    /// applied.
+    ///
+    /// # Errors
+    /// Route/leader failures as [`ClientError`].
+    pub async fn hier_rename(
+        &self,
+        bucket: u64,
+        parent_ino: u64,
+        from: &[u8],
+        to: &[u8],
+        ts_millis: i64,
+    ) -> Result<Option<String>, ClientError> {
+        let routing = hier_routing_key(parent_ino, from);
+        let req = meta::HierRenameRequest {
+            bucket_id: bucket,
+            parent_ino,
+            from: from.to_vec(),
+            to: to.to_vec(),
+            ts_millis,
+        };
+        let resp = self
+            .route_op(
+                NsMode::Hier,
+                bucket,
+                &routing,
+                |mut stub| {
+                    let req = req.clone();
+                    async move { stub.hier_rename(req).await.map(tonic::Response::into_inner) }
+                },
+                |resp| resp.error.clone(),
+            )
+            .await?;
+        Ok((!resp.rejected.is_empty()).then_some(resp.rejected))
+    }
+
+    /// rmdir step 1 (03 §6.2): unlinks the child directory from its parent.
+    /// Returns a `rejected` reason when the directory is non-empty or missing,
+    /// `None` when applied.
+    ///
+    /// # Errors
+    /// Route/leader failures as [`ClientError`].
+    pub async fn hier_rmdir_unlink(
+        &self,
+        bucket: u64,
+        parent_ino: u64,
+        name: &[u8],
+        ts_millis: i64,
+    ) -> Result<Option<String>, ClientError> {
+        let routing = hier_routing_key(parent_ino, name);
+        let req = meta::HierRmdirUnlinkRequest {
+            bucket_id: bucket,
+            parent_ino,
+            name: name.to_vec(),
+            ts_millis,
+        };
+        let resp = self
+            .route_op(
+                NsMode::Hier,
+                bucket,
+                &routing,
+                |mut stub| {
+                    let req = req.clone();
+                    async move {
+                        stub.hier_rmdir_unlink(req)
+                            .await
+                            .map(tonic::Response::into_inner)
+                    }
+                },
+                |resp| resp.error.clone(),
+            )
+            .await?;
+        Ok((!resp.rejected.is_empty()).then_some(resp.rejected))
+    }
+
+    /// rmdir step 2 / commit point (03 §6.2): reclaims the empty directory's
+    /// sentinel. Returns a `rejected` reason if the directory is still non-empty
+    /// or the sentinel is missing, `None` when applied.
+    ///
+    /// # Errors
+    /// Route/leader failures as [`ClientError`].
+    pub async fn hier_rmdir_sentinel(
+        &self,
+        bucket: u64,
+        ino: u64,
+        ts_millis: i64,
+    ) -> Result<Option<String>, ClientError> {
+        // Route by the sentinel's own coordinate (its ino lives in its minting
+        // partition; the empty-name routing key targets the sentinel record).
+        let routing = hier_routing_key(ino, b"");
+        let req = meta::HierRmdirSentinelRequest {
+            bucket_id: bucket,
+            ino,
+            ts_millis,
+        };
+        // HierRmdirSentinelRequest is all-scalar (Copy); no clone needed.
+        let resp = self
+            .route_op(
+                NsMode::Hier,
+                bucket,
+                &routing,
+                |mut stub| async move {
+                    stub.hier_rmdir_sentinel(req)
+                        .await
+                        .map(tonic::Response::into_inner)
+                },
+                |resp| resp.error.clone(),
+            )
+            .await?;
+        Ok((!resp.rejected.is_empty()).then_some(resp.rejected))
+    }
 }
 
 /// Multipart-upload operations (design 03 §5). Every op routes by the object
@@ -707,6 +899,32 @@ impl MetaClient {
             })?
             .into_inner();
         Ok(resp.hosted.then_some(resp.blob_ids))
+    }
+    /// Purges one bucket's records from a partition (99-Q15 DeleteRange).
+    /// `None` when the addressed node does not lead the partition (the caller
+    /// re-resolves the leader and retries).
+    ///
+    /// # Errors
+    /// [`ClientError::Rpc`] on a transport or server failure.
+    pub async fn delete_range(
+        &self,
+        addr: &str,
+        partition_id: u64,
+        bucket_id: u64,
+    ) -> Result<Option<u64>, ClientError> {
+        let mut stub = self.stub(addr)?;
+        let resp = stub
+            .delete_range(meta::DeleteRangeRequest {
+                partition_id,
+                bucket_id,
+            })
+            .await
+            .map_err(|status| ClientError::Rpc {
+                code: format!("{:?}", status.code()),
+                message: status.message().to_string(),
+            })?
+            .into_inner();
+        Ok(resp.hosted.then_some(resp.purged))
     }
 }
 fn hier_routing_key(parent_ino: u64, name: &[u8]) -> Vec<u8> {

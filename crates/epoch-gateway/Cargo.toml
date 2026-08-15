@@ -27,6 +27,8 @@ epoch-client = { workspace = true }
 # `grpc` gives the MetaNode wire types (SliceRef, ObjectHeadView) the M6 bridge
 # maps to/from; the gateway drives MetaNode over the generated client.
 epoch-proto = { workspace = true, features = ["grpc"] }
+epoch-telemetry = { workspace = true }
+prometheus = { workspace = true }
 epoch-ec = { workspace = true }
 epoch-rpc = { workspace = true }
 bytes = { workspace = true }

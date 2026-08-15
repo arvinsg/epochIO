@@ -148,6 +148,35 @@ pub fn spawn_inspect_trigger(journal: Arc<Journal>, interval: Duration) -> JobLe
     JobLeaseHandle { task }
 }
 
+/// Spawns the leader-gated GcRound trigger (01 §6.3: PD 只发 Round 号). Each
+/// tick maintains the replicated round bookkeeping — completing the round that
+/// has run its `interval` and opening the next — so every DataNode's self-driven
+/// scan observes a well-defined, monotonic round number. A follower tick is a
+/// no-op.
+///
+/// The clock is read here (never inside `apply`), so the round's opening
+/// timestamp stays deterministic across replicas.
+#[must_use]
+pub fn spawn_gc_trigger(
+    journal: Arc<Journal>,
+    interval: Duration,
+    clock: Arc<dyn Clock>,
+) -> JobLeaseHandle {
+    let task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            let millis = interval.as_millis().min(u64::MAX as u128) as u64;
+            match journal.sweep_gc_round(millis, clock.now_millis()).await {
+                Ok(true) => tracing::info!("gc trigger opened a new GcRound"),
+                Ok(false) => {}
+                Err(err) => tracing::warn!(error = %err, "gc trigger sweep failed"),
+            }
+        }
+    });
+    JobLeaseHandle { task }
+}
+
 /// One dispatch sweep: assign a coordinator to every Job that needs one — never
 /// assigned (`Created`) as well as those whose lease lapsed before `now_millis`.
 ///

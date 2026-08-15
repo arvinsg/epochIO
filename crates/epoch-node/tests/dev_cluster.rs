@@ -107,6 +107,7 @@ impl DevCluster {
                 parity: 1,
                 stripe_size: STRIPE,
                 blob_size: BLOB,
+                write_quorum: None,
             },
             writer: WriterSpec { token: 1 },
             chunks: Vec::<ChunkSpec>::new(),

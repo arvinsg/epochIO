@@ -56,6 +56,13 @@ pub enum JobKind {
     /// A stripe-presence inspection round (quorum-gap backstop, 01 §6.3).
     InspectRound,
     /// A garbage-collection round (per-token watermark reclaim, 01 §6.3).
+    ///
+    /// GcRound is the only self-driven kind: every DataNode runs its own scan
+    /// (no coordinator pulls subtasks, 02 §3.2), so PD's whole job here is the
+    /// *Round 号* — the replicated, monotonic id of this Job is the round
+    /// number, and the watermark records how many rounds have been opened. The
+    /// previous round is auto-completed after a full interval, so "latest open
+    /// round" is always well-defined without a clock inside `apply`.
     GcRound,
 }
 

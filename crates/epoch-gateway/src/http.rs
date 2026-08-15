@@ -58,22 +58,31 @@ pub struct S3Backend<S: TokenSource> {
     objects: ObjectService<S>,
     buckets: BucketCache,
     creds: epoch_client::CredentialCache,
+    pd: epoch_client::PdClient,
 }
 
 impl<S: TokenSource> S3Backend<S> {
-    /// Assembles the backend over the object service, bucket cache, and the
-    /// credential cache used for bucket-level authorization.
+    /// Assembles the backend over the object service, bucket cache, credential
+    /// cache used for bucket-level authorization, and the PD client (bucket
+    /// deletion goes to PD, 99-Q15).
     #[must_use]
     pub fn new(
         objects: ObjectService<S>,
         buckets: BucketCache,
         creds: epoch_client::CredentialCache,
+        pd: epoch_client::PdClient,
     ) -> Self {
         Self {
             objects,
             buckets,
             creds,
+            pd,
         }
+    }
+
+    /// The PD control-plane client (bucket deletion tombstones at PD, 99-Q15).
+    fn pd(&self) -> &epoch_client::PdClient {
+        &self.pd
     }
 
     /// Resolves a bucket **and authorizes the caller for it** (01 §6 IAM-lite).
@@ -146,57 +155,47 @@ impl<S: TokenSource> S3Backend<S> {
         start_after: &[u8],
         limit: u32,
     ) -> S3Result<crate::list::ListPage> {
-        // Bounds the work one request can cause when folding collapses a lot of
-        // keys into few rows (each batch is one MetaNode round trip).
-        const MAX_BATCHES: usize = 16;
+        // Fetch one merged page spanning every partition the prefix covers
+        // (03 §5 跨分区归并) — without this a bucket split across partitions
+        // lists only the partition the scan started in, silently dropping the
+        // rest of the bucket's objects.
+        let (entries, list_token) = self
+            .objects
+            .meta()
+            .list_objects_merged(bucket_id, prefix, start_after, limit)
+            .await
+            .map_err(|e| to_s3_error(crate::error::GatewayError::Meta(e.to_string())))?;
 
-        let mut cursor = start_after.to_vec();
+        // Fold delimiter → CommonPrefixes over the merged page. The fold needs a
+        // skip point: when it collapses trailing groups, resume from its bound
+        // (still within the merged key space); otherwise the merged token.
+        let keys: Vec<Vec<u8>> = entries.iter().map(|e| e.key.clone()).collect();
+        let folded = crate::list::fold(&keys, prefix, delimiter, limit as usize);
         let mut rows: Vec<crate::list::ListRow> = Vec::new();
-        let mut next_token: Option<Vec<u8>> = None;
-        for _ in 0..MAX_BATCHES {
-            let remaining = limit as usize - rows.len();
-            let entries = self
-                .objects
-                .meta()
-                .list_objects(bucket_id, prefix, &cursor, limit)
-                .await
-                .map_err(|e| to_s3_error(crate::error::GatewayError::Meta(e.to_string())))?;
-            if entries.is_empty() {
-                next_token = None;
-                break;
-            }
-            let batch_exhausted = (entries.len() as u32) < limit;
-            let keys: Vec<Vec<u8>> = entries.iter().map(|e| e.key.clone()).collect();
-            let folded = crate::list::fold(&keys, prefix, delimiter, remaining);
-            for row in folded.rows {
-                match row {
-                    crate::list::Row::Key(key) => {
-                        // Re-attach the entry so size/etag survive the fold.
-                        if let Some(entry) = entries.iter().find(|e| e.key == key) {
-                            rows.push(crate::list::ListRow::Object(entry.clone()));
-                        }
-                    }
-                    crate::list::Row::CommonPrefix(p) => {
-                        rows.push(crate::list::ListRow::Prefix(p));
+        for row in folded.rows {
+            match row {
+                crate::list::Row::Key(key) => {
+                    if let Some(entry) = entries.iter().find(|e| e.key == key) {
+                        rows.push(crate::list::ListRow::Object(entry.clone()));
                     }
                 }
+                crate::list::Row::CommonPrefix(p) => {
+                    rows.push(crate::list::ListRow::Prefix(p));
+                }
             }
-            // Where to continue: the fold's skip point when it gave one, else
-            // after the last key this batch scanned.
-            cursor = folded
-                .resume_after
-                .unwrap_or_else(|| keys.last().cloned().unwrap_or_default());
-            if rows.len() >= limit as usize {
-                next_token = Some(cursor);
-                break;
-            }
-            if batch_exhausted {
-                // The scan reached the end of the prefix's key space.
-                next_token = None;
-                break;
-            }
-            next_token = Some(cursor.clone());
         }
+        let next_token = if list_token.is_some() {
+            // There is more key space: resume from the fold's skip point when it
+            // gave one, else the merged cursor.
+            Some(
+                folded
+                    .resume_after
+                    .or(list_token)
+                    .unwrap_or_else(|| keys.last().cloned().unwrap_or_default()),
+            )
+        } else {
+            None
+        };
         Ok(crate::list::ListPage { rows, next_token })
     }
 }
@@ -237,6 +236,21 @@ fn is_hier(bucket: &epoch_client::BucketInfo) -> bool {
     bucket.ns_mode == epoch_proto::grpc::pd::NsMode::Hier
 }
 
+/// Rejects a write against a tombstoned bucket (99-Q15): a `Deleting` bucket
+/// refuses new PUTs and multipart creates while the MetaNode purges its records.
+/// Reads are unaffected. S3's `NoSuchBucket` is the honest signal — the bucket is
+/// on its way out, and a 4xx stops the client retrying a doomed write.
+fn ensure_writable(bucket: &epoch_client::BucketInfo) -> S3Result<()> {
+    if bucket.deleting {
+        return Err(s3_error!(
+            NoSuchBucket,
+            "bucket is being deleted: {}",
+            bucket.bucket_id
+        ));
+    }
+    Ok(())
+}
+
 /// Collects the S3 metadata headers a PUT carries, to persist on the head and
 /// replay on GET/HEAD.
 ///
@@ -267,8 +281,10 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::PutObjectInput>,
     ) -> S3Result<S3Response<dto::PutObjectOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("put");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
+        ensure_writable(&bucket)?;
         // Capture the metadata headers before the body is moved out of `input`.
         let http = http_meta_of(&input);
         // Collect the streaming body (bounded; MVP buffers before EC encode).
@@ -281,20 +297,23 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
             }
             None => bytes::Bytes::new(),
         };
+        crate::metrics::record_object_bytes("put", body.len() as u64);
         // Hierarchical buckets translate the key as a path (03 §6.4): implicit
         // mkdir + dir/file conflict. Flat buckets go straight to the object
         // service (inline vs EC).
         let etag = if is_hier(&bucket) {
-            crate::s3compat::put(
-                self.objects.meta(),
-                bucket.bucket_id,
-                input.key.as_bytes(),
-                body.as_ref(),
-                now_millis(),
-                http,
-            )
-            .await
-            .map_err(to_s3_error)?
+            self.objects
+                .put_hier(
+                    bucket.bucket_id,
+                    input.key.as_bytes(),
+                    body.as_ref(),
+                    bucket.inline_threshold,
+                    now_millis(),
+                    http,
+                )
+                .await
+                .map_err(to_s3_error)?
+                .etag
         } else {
             self.objects
                 .put_object(
@@ -319,73 +338,28 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::GetObjectInput>,
     ) -> S3Result<S3Response<dto::GetObjectOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("get");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
-        if is_hier(&bucket) {
-            let Some(obj) =
-                crate::s3compat::get(self.objects.meta(), bucket.bucket_id, input.key.as_bytes())
-                    .await
-                    .map_err(to_s3_error)?
-            else {
-                return Err(s3_error!(NoSuchKey, "no such key: {}", input.key));
-            };
-            // hier bodies are inline (03 §6.4), so a window is a slice of bytes
-            // already in hand — but it must still be honoured, or a ranged read
-            // gets the whole object under 200 (see `crate::range` INVARIANT).
-            let window = match input.range {
-                Some(range) => {
-                    let spec = crate::object::RangeSpec::from(range);
-                    Some(
-                        crate::range::resolve(obj.size, spec.first, spec.last, spec.suffix)
-                            .map_err(|_| {
-                                to_s3_error(crate::error::GatewayError::RangeNotSatisfiable(
-                                    obj.size,
-                                ))
-                            })?,
-                    )
-                }
-                None => None,
-            };
-            let bytes = match window {
-                Some(w) => {
-                    let start = usize::try_from(w.start).unwrap_or(usize::MAX);
-                    let end = usize::try_from(w.end).unwrap_or(usize::MAX);
-                    obj.body
-                        .get(start..=end)
-                        .ok_or_else(|| {
-                            to_s3_error(crate::error::GatewayError::RangeNotSatisfiable(obj.size))
-                        })?
-                        .to_vec()
-                }
-                None => obj.body,
-            };
-            let body = dto::StreamingBlob::from(s3s::Body::from(bytes));
-            let mut response = S3Response::new(dto::GetObjectOutput {
-                body: Some(body),
-                content_length: Some(window.map_or(obj.size, |w| w.byte_count()) as i64),
-                content_range: window.map(|w| w.content_range(obj.size)),
-                accept_ranges: Some("bytes".to_string()),
-                e_tag: Some(dto::ETag::Strong(hex16(&obj.etag))),
-                last_modified: Some(stored_ts(obj.mtime)),
-                content_type: obj.http.content_type.clone(),
-                content_encoding: obj.http.content_encoding.clone(),
-                cache_control: obj.http.cache_control.clone(),
-                metadata: user_metadata(&obj.http.user),
-                ..Default::default()
-            });
-            if window.is_some() {
-                response.status = Some(::http::StatusCode::PARTIAL_CONTENT);
-            }
-            return Ok(response);
-        }
-        let Some(fetched) = self
-            .objects
-            .get_object_maybe_ranged(bucket.bucket_id, input.key.as_bytes(), input.range)
-            .await
-            .map_err(to_s3_error)?
-        else {
+        // Both namespaces produce the same `FetchedObject` (a hier bucket only
+        // changes how the key is resolved, not how a body is served), so the
+        // response is built once — a ranged hier read can no longer drift from a
+        // ranged flat read (see `crate::range` INVARIANT).
+        let fetched = if is_hier(&bucket) {
+            self.objects
+                .get_hier_maybe_ranged(bucket.bucket_id, input.key.as_bytes(), input.range)
+                .await
+                .map_err(to_s3_error)?
+        } else {
+            self.objects
+                .get_object_maybe_ranged(bucket.bucket_id, input.key.as_bytes(), input.range)
+                .await
+                .map_err(to_s3_error)?
+        };
+        let Some(fetched) = fetched else {
             return Err(s3_error!(NoSuchKey, "no such key: {}", input.key));
         };
+        crate::metrics::record_object_bytes("get", fetched.body.len() as u64);
         let body = s3s::dto::StreamingBlob::from(s3s::Body::from(fetched.body));
         // A ranged read answers 206 with `Content-Range`; a whole-object read 200.
         // Returning the full body under 200 for a range request would silently
@@ -423,6 +397,7 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::HeadObjectInput>,
     ) -> S3Result<S3Response<dto::HeadObjectOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("head");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
         let head = if is_hier(&bucket) {
@@ -458,6 +433,7 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::DeleteObjectInput>,
     ) -> S3Result<S3Response<dto::DeleteObjectOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("delete");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
         if is_hier(&bucket) {
@@ -482,6 +458,7 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::DeleteObjectsInput>,
     ) -> S3Result<S3Response<dto::DeleteObjectsOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("delete");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
         let hier = is_hier(&bucket);
@@ -534,6 +511,7 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::CopyObjectInput>,
     ) -> S3Result<S3Response<dto::CopyObjectOutput>> {
+        let _timer = crate::metrics::RequestTimer::start("copy");
         let input = req.input;
         let (src_bucket_name, src_key) = match &input.copy_source {
             dto::CopySource::Bucket { bucket, key, .. } => (bucket.to_string(), key.to_string()),
@@ -548,21 +526,14 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
             .bucket(req.credentials.as_ref(), &src_bucket_name)
             .await?;
         let dst = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
-        // Physical re-encode copy; hier namespaces (implicit-mkdir / dir-file
-        // semantics) are a follow-up, both endpoints must be flat.
-        if is_hier(&src) || is_hier(&dst) {
-            return Err(s3_error!(
-                NotImplemented,
-                "copy within a hierarchical bucket is not yet supported"
-            ));
-        }
+        // Physical re-encode copy (a metadata-only copy would be unsafe under the
+        // single-phase delete model — see `ObjectService::copy_object`). Either
+        // end may be hier: the address carries its own namespace.
         let result = self
             .objects
-            .copy_object(
-                src.bucket_id,
-                src_key.as_bytes(),
-                dst.bucket_id,
-                input.key.as_bytes(),
+            .copy_between(
+                crate::object::Located::new(src.bucket_id, src_key.as_bytes(), is_hier(&src)),
+                crate::object::Located::new(dst.bucket_id, input.key.as_bytes(), is_hier(&dst)),
                 dst.inline_threshold,
                 now_millis(),
             )
@@ -583,6 +554,7 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         &self,
         req: S3Request<dto::ListObjectsV2Input>,
     ) -> S3Result<S3Response<dto::ListObjectsV2Output>> {
+        let _timer = crate::metrics::RequestTimer::start("list");
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
         let prefix = input.prefix.clone().unwrap_or_default();
@@ -673,12 +645,35 @@ impl<S: TokenSource + 'static> S3 for S3Backend<S> {
         Ok(S3Response::new(dto::HeadBucketOutput::default()))
     }
 
+    async fn delete_bucket(
+        &self,
+        req: S3Request<dto::DeleteBucketInput>,
+    ) -> S3Result<S3Response<dto::DeleteBucketOutput>> {
+        let input = req.input;
+        // Authorize first, then tombstone at PD (99-Q15 step 1). The MetaNode
+        // purge and the blob reclaim (DeleteRange → GcRound) follow from the
+        // tombstone; this call returns once the tombstone is committed.
+        self.authorize(req.credentials.as_ref(), &input.bucket)
+            .await?;
+        self.pd()
+            .delete_bucket(&input.bucket)
+            .await
+            .map_err(|e| match e {
+                epoch_client::ClientError::NotFound(_) => {
+                    s3_error!(NoSuchBucket, "no such bucket: {}", input.bucket)
+                }
+                other => s3_error!(InternalError, "delete bucket: {other}"),
+            })?;
+        Ok(S3Response::new(dto::DeleteBucketOutput::default()))
+    }
+
     async fn create_multipart_upload(
         &self,
         req: S3Request<dto::CreateMultipartUploadInput>,
     ) -> S3Result<S3Response<dto::CreateMultipartUploadOutput>> {
         let input = req.input;
         let bucket = self.bucket(req.credentials.as_ref(), &input.bucket).await?;
+        ensure_writable(&bucket)?;
         reject_hier_multipart(&bucket)?;
         // Mint a fresh upload id (a random-free monotonic-ish value from the
         // clock; uniqueness within a key is all the metadata layer needs — a

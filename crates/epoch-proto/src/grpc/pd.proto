@@ -23,6 +23,11 @@ message CodeMode {
   uint32 parity = 3;
   uint32 stripe_size = 4;
   uint64 blob_size = 5;
+  // Shards that must commit for a durable write (10 §3 缺口 C). Explicit rather
+  // than derived from `parity`: the EC `parity/2` tolerance and a replica's
+  // `N/2+1` are different policies, so the mode carries it. 0 on records written
+  // before this field existed → the server derives the legacy formula.
+  uint32 write_quorum = 6;
 }
 
 // Lifecycle status of a committed chunk (docs/design/01-pd.md §3). UNSPECIFIED is
@@ -231,6 +236,14 @@ enum MetaEngine {
   META_ENGINE_MEM = 2;
 }
 
+// BucketStatus: bucket lifecycle state (99-Q15). DELETING is a tombstone —
+// the gateway refuses new writes to it while the MetaNode purges its records.
+enum BucketStatus {
+  BUCKET_STATUS_UNSPECIFIED = 0;
+  BUCKET_STATUS_ACTIVE = 1;
+  BUCKET_STATUS_DELETING = 2;
+}
+
 // CreateBucket — create a bucket (idempotent by name; allocates a never-reused id).
 message CreateBucketRequest {
   string name = 1;
@@ -254,6 +267,23 @@ message BucketInfo {
   uint32 codemode_id = 5;
   MetaEngine engine = 6;
   int64 created_at = 7;
+  // Lifecycle state (99-Q15). Absent on records written before this field
+  // existed → UNSPECIFIED, which the server normalises to ACTIVE.
+  BucketStatus status = 8;
+}
+
+// DeleteBucket — tombstone a bucket (99-Q15): the bucket flips to DELETING
+// (refusing new writes) and each MetaNode partition purges its records under
+// the bucket prefix (DeleteRange); the now-unreferenced blobs are reclaimed by
+// the GcRound watermark mechanism (01 §6.3). Not instantaneous — the call
+// returns once the tombstone is committed.
+message DeleteBucketRequest {
+  // The bucket to delete, by name (the S3-facing identity).
+  string name = 1;
+}
+
+message DeleteBucketResponse {
+  uint64 bucket_id = 1;
 }
 
 message ListBucketsRequest {}
@@ -594,6 +624,7 @@ service PdControl {
   rpc SealChunk(SealChunkRequest) returns (SealChunkResponse);
   rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse);
   rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse);
   rpc PutConfig(PutConfigRequest) returns (PutConfigResponse);
   rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
   rpc PutCredential(PutCredentialRequest) returns (PutCredentialResponse);

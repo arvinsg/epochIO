@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use epoch_proto::grpc::pd::{self, NsMode};
+use epoch_proto::grpc::pd::{self, BucketStatus, NsMode};
 
 use crate::error::ClientError;
 use crate::pd::PdClient;
@@ -44,6 +44,10 @@ pub struct BucketInfo {
     pub inline_threshold: u64,
     /// The bucket's EC code-mode id.
     pub codemode_id: u32,
+    /// Whether the bucket is tombstoned for deletion (99-Q15): a `Deleting`
+    /// bucket refuses new writes. Reads are still served until the records are
+    /// purged.
+    pub deleting: bool,
 }
 
 impl BucketInfo {
@@ -53,6 +57,9 @@ impl BucketInfo {
             ns_mode: NsMode::try_from(b.ns_mode).unwrap_or(NsMode::Flat),
             inline_threshold: b.inline_threshold,
             codemode_id: b.codemode_id,
+            // Records written before the field existed decode as UNSPECIFIED;
+            // normalise anything non-DELETING to "not deleting".
+            deleting: b.status == BucketStatus::Deleting as i32,
         }
     }
 }
